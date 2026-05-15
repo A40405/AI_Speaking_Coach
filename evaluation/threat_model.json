@@ -1,0 +1,96 @@
+{
+  "project_understanding": {
+    "product_goal": "An authenticated AI speaking coach that helps learners practice spoken English through text or audio turns, returns a short conversational reply, gives inline grammar feedback, and optionally runs a separate Azure pronunciation assessment with word and phoneme detail.",
+    "main_features": [
+      "Text and audio chat through /api/chat/respond",
+      "Groq STT transcription for audio turns",
+      "Groq LLM conversational coaching with XML-wrapped grammar annotations",
+      "ElevenLabs TTS reply audio",
+      "Azure pronunciation assessment through /api/assess",
+      "Conversation persistence with replayable user and assistant audio",
+      "Grammar detail retrieval through /api/grammar/detail_grammar_fb/{message_id}",
+      "Topic-based prompt routing with category and topic layers",
+      "Bilingual UI strings in English and Vietnamese",
+      "Flashcard tool calling for authenticated users when explicitly requested"
+    ],
+    "conversation_style": "Short, warm, supportive, speech-friendly, gently corrective, and usually limited to one follow-up question."
+  },
+  "safety_sensitive_areas": [
+    "Self-harm and crisis language embedded inside ordinary tutoring requests",
+    "Violence, weapons, and illegal activity phrased as grammar-editing tasks",
+    "Credential theft, phishing, and privacy abuse hidden inside business-English requests",
+    "Healthcare roleplay that could drift into medical diagnosis or medication advice",
+    "Prompt injection and jailbreak attempts aimed at revealing hidden instructions or bypassing safety",
+    "PII leakage in user inputs and assistant outputs",
+    "Harassment-writing requests disguised as normal tone-editing"
+  ],
+  "attack_surfaces": [
+    {
+      "surface": "Input guardrails",
+      "details": [
+        "Regex-only prompt injection detection",
+        "Regex-only blocked-topic detection",
+        "English-centric patterns vulnerable to multilingual or obfuscated bypasses"
+      ]
+    },
+    {
+      "surface": "LLM prompt layer",
+      "details": [
+        "Dynamic prompt composition with category and topic layers",
+        "Grammar-output formatting depends on model compliance",
+        "Recent-history window only"
+      ]
+    },
+    {
+      "surface": "Voice pipeline",
+      "details": [
+        "ASR transcript corruption",
+        "Frontend short-transcript hallucination filter",
+        "Audio transcription fallback string when STT fails"
+      ]
+    },
+    {
+      "surface": "Pronunciation assessment flow",
+      "details": [
+        "Separate API and separate failure mode from chat",
+        "Frontend can request vi-VN while backend only accepts en-US and en-GB"
+      ]
+    },
+    {
+      "surface": "Tool use",
+      "details": [
+        "Flashcard tools are available for authenticated users",
+        "Tool use should only occur on explicit user request"
+      ]
+    }
+  ],
+  "existing_safeguards": [
+    "Input validator rejects empty and oversized input",
+    "Rate limiter on user input with Redis-backed sliding window",
+    "Regex-based injection detector",
+    "Regex-based blocked-topic filter",
+    "Output content filter that redacts PII patterns",
+    "Conversation ownership checks",
+    "Audio type and signature validation",
+    "Tool-call iteration cap"
+  ],
+  "known_weaknesses": [
+    "Sub-option scenario prompting is not wired through the live chat route",
+    "Client-supplied history is ignored by the active backend chat route",
+    "Prompt injection detection can miss obfuscated, multilingual, or indirect forms",
+    "Blocked-topic detection may both miss euphemistic harm and over-block benign educational questions",
+    "Output guardrails do not classify harmful tutoring output beyond PII redaction",
+    "Grammar annotations silently degrade when model XML or JSON formatting breaks",
+    "Conversation memory is shallow and may drop older user preferences",
+    "Pronunciation scoring has locale mismatch risk for Vietnamese UI mode",
+    "Rate limiter fails open when Redis is unavailable"
+  ],
+  "evaluation_priorities": [
+    "Prompt-injection resistance with realistic obfuscation and multilingual variants",
+    "Safety handling when harmful requests are wrapped inside tutoring or grammar tasks",
+    "Recovery from ASR corruption without losing the user's real intent",
+    "Emotionally appropriate tutoring under frustration, shame, panic, and low confidence",
+    "Consistent role behavior across IELTS, business, daily-life, and healthcare practice",
+    "Avoiding privacy leaks and unsafe output repetition"
+  ]
+}

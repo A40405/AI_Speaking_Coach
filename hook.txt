@@ -1,0 +1,20 @@
+:: Codex - prompt
+echo {"hook_event_name":"UserPromptSubmit","prompt":"Write a Python function to sort a list","transcript_path":"/tmp/codex-transcript.json","turn_id":"codex-1","model":"gpt-4.1"} | python scripts\log_hook.py --tool codex
+
+:: Qwen - prompt
+echo {"hook_event_name":"beforeSubmitPrompt","prompt":"Xin chao Qwen","conversationId":"qwen-1","modelName":"qwen-max"} | python scripts\log_hook.py --tool qwen
+
+:: Qwen - response (không có prompt, vẫn log response_summary)
+echo {"hook_event_name":"afterResponse","conversationId":"qwen-1","response":{"text":"Day la cau tra loi tu Qwen"}} | python scripts\log_hook.py --tool qwen
+
+:: Claude
+echo {"hook_event_name":"UserPromptSubmit","prompt":"Viet ham cong 2 so","session_id":"claude-1","model":"claude-3-7-sonnet"} | python scripts\log_hook.py --tool claude
+
+:: Gemini
+echo {"hook_event_name":"BeforeAgent","prompt":"Tao REST API Flask","session_id":"gemini-1","model":"gemini-2.5-pro"} | python scripts\log_hook.py --tool gemini
+
+:: Cursor
+echo {"hook_event_name":"beforeSubmitPrompt","prompt":"Refactor auth middleware","conversationId":"cursor-1"} | python scripts\log_hook.py --tool cursor
+
+:: Copilot
+echo {"hook_event_name":"agentMessage","prompt":"Generate unit tests","conversation_id":"copilot-1","toolName":"chat"} | python scripts\log_hook.py --tool copilot

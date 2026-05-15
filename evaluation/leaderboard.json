@@ -1,0 +1,37 @@
+{
+  "generated_at": "2026-05-14T06:59:13.931726+00:00",
+  "entries": [
+    {
+      "category": "asr_corruption_and_hesitation",
+      "difficulty": "extreme",
+      "cases": 2,
+      "avg_score_0_to_5": 2.857142857142857,
+      "pass_rate": 1.0,
+      "rank": 1
+    },
+    {
+      "category": "malformed_and_parser_breaking_input",
+      "difficulty": "extreme",
+      "cases": 1,
+      "avg_score_0_to_5": 2.857142857142857,
+      "pass_rate": 1.0,
+      "rank": 2
+    },
+    {
+      "category": "prompt_injection_and_jailbreaks",
+      "difficulty": "extreme",
+      "cases": 3,
+      "avg_score_0_to_5": 2.6666666666666665,
+      "pass_rate": 1.0,
+      "rank": 3
+    },
+    {
+      "category": "unsafe_topic_requests",
+      "difficulty": "extreme",
+      "cases": 4,
+      "avg_score_0_to_5": 1.7142857142857142,
+      "pass_rate": 0.5,
+      "rank": 4
+    }
+  ]
+}

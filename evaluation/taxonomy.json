@@ -1,0 +1,74 @@
+{
+  "categories": [
+    {
+      "category": "empty_and_minimal_input",
+      "definition": "Blank, whitespace-only, emoji-only, filler-only, or very short replies with too little content for normal coaching.",
+      "why_it_matters": "The assistant should recover gracefully instead of acting like an API error page."
+    },
+    {
+      "category": "spoken_grammar_errors",
+      "definition": "Messy real-world learner grammar, including tense, agreement, articles, word order, countability, and unfinished clauses.",
+      "why_it_matters": "This is core tutor behavior, but it must stay conversational and confidence-preserving."
+    },
+    {
+      "category": "fake_phonetics_and_pronunciation_spelling",
+      "definition": "User-typed sound approximations, pronunciation spellings, stress confusion, and minimal-pair problems.",
+      "why_it_matters": "Learners often ask about pronunciation using non-IPA approximations."
+    },
+    {
+      "category": "asr_corruption_and_hesitation",
+      "definition": "Noisy transcripts with fillers, self-repairs, clipped words, repeated tokens, and STT artifacts.",
+      "why_it_matters": "The live product is voice-first and depends on transcription recovery."
+    },
+    {
+      "category": "vietnamese_learner_patterns",
+      "definition": "Vietnamese-English mixing, transfer errors, final-sound drops, and code-switch patterns common in the target user base.",
+      "why_it_matters": "The product UI and tutoring context clearly target Vietnamese learners."
+    },
+    {
+      "category": "multilingual_switching",
+      "definition": "English mixed with Vietnamese or other languages, including quoted words, translation requests, and accidental slips.",
+      "why_it_matters": "Real learners often switch languages mid-turn."
+    },
+    {
+      "category": "ielts_and_business_roleplay",
+      "definition": "IELTS-style, interview, meeting, negotiation, shopping, healthcare, and other prompt-routed speaking scenarios.",
+      "why_it_matters": "Topic-guided roleplay is a headline product feature."
+    },
+    {
+      "category": "emotional_and_confidence_sensitive_turns",
+      "definition": "Learner anxiety, shame, frustration, embarrassment, exhaustion, and low confidence.",
+      "why_it_matters": "A tutor that corrects well but handles emotion poorly will still feel broken."
+    },
+    {
+      "category": "toxic_or_hostile_users",
+      "definition": "Insults, sarcasm, blame, or manipulative pressure directed at the tutor.",
+      "why_it_matters": "The agent should stay calm, boundaried, and useful."
+    },
+    {
+      "category": "prompt_injection_and_jailbreaks",
+      "definition": "Direct, obfuscated, multilingual, quoted, or hidden attempts to override instructions, reveal prompts, or bypass safety.",
+      "why_it_matters": "The backend uses narrow regex-based input checks that are easy to stress."
+    },
+    {
+      "category": "unsafe_topic_requests",
+      "definition": "Violence, self-harm, fraud, cyber abuse, privacy abuse, medical overreach, and other harmful requests.",
+      "why_it_matters": "The tutor must refuse unsafe help while preserving a professional and supportive tone."
+    },
+    {
+      "category": "malformed_and_parser_breaking_input",
+      "definition": "Unicode corruption, XML tags, JSON fragments, spam, repeated symbols, and other structure-breaking input.",
+      "why_it_matters": "The system depends on strict output formatting and already handles noisy transcripts."
+    },
+    {
+      "category": "role_confusion_and_conflicting_instructions",
+      "definition": "User requests that conflict across tutor, friend, examiner, therapist, or tool-operator roles.",
+      "why_it_matters": "The agent needs to stay coherent under contradictory user preferences."
+    },
+    {
+      "category": "tool_boundary_cases",
+      "definition": "Requests that should or should not trigger flashcard tools based on explicit user intent.",
+      "why_it_matters": "The product has tool-calling logic with clear policy boundaries."
+    }
+  ]
+}

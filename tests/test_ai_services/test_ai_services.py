@@ -1,0 +1,681 @@
+# tests/test_ai_services/test_ai_services.py
+"""
+Unit tests for app.core.ai_services
+Covers: normalize_history, transcribe_audio, run_langraph_agent,
+        _synthesize_audio_bytes, get_voice_agent_pipeline (cache),
+        get_stt_service (cache)
+"""
+
+import json
+import os
+from unittest.mock import MagicMock, patch, call
+
+import pytest
+
+os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-pytest-only")
+os.environ.setdefault("POSTGRES_PASSWORD", "test-password-strong-2026")
+os.environ.setdefault("GROQ_API_KEY", "test-groq-key")
+os.environ.setdefault("ELEVENLABS_API_KEY", "test-el-key")
+
+
+# ---------------------------------------------------------------------------
+# normalize_history
+# ---------------------------------------------------------------------------
+
+class TestNormalizeHistory:
+    def _call(self, history_raw, category=None):
+        # Import here to avoid module-level side effects
+        from app.core.ai_services import normalize_history
+        return normalize_history(history_raw=history_raw, category=category)
+
+    def test_normalize_history_no_history_no_topic_returns_empty(self):
+        result = self._call(None, category=None)
+        assert result == []
+
+    def test_normalize_history_topic_only_returns_empty(self):
+        result = self._call(None, category="IELTS Part 1")
+        assert result == []
+
+    def test_normalize_history_topic_whitespace_is_ignored(self):
+        result = self._call(None, category="  Daily  ")
+        assert result == []
+
+    def test_normalize_history_blank_topic_not_added(self):
+        result = self._call(None, category="   ")
+        assert result == []
+
+    def test_normalize_history_ignores_category_and_topic_metadata(self):
+        from app.core.ai_services import normalize_history
+
+        result = normalize_history(history_raw=None, category="Travel", topic="Airport Check-in")
+
+        assert result == []
+
+    def test_normalize_history_valid_json_list_of_dicts(self):
+        history = json.dumps([
+            {"role": "user", "text": "Hello"},
+            {"role": "assistant", "text": "Hi there"},
+        ])
+        result = self._call(history, category=None)
+        assert "User: Hello" in result
+        assert "Assistant: Hi there" in result
+
+    def test_normalize_history_does_not_prepend_topic_before_messages(self):
+        history = json.dumps([{"role": "user", "text": "Hello"}])
+        result = self._call(history, category="Travel")
+        assert result == ["User: Hello"]
+
+    def test_normalize_history_invalid_json_returns_empty(self):
+        result = self._call("not valid json {{", category="Travel")
+        assert result == []
+
+    def test_normalize_history_non_list_json_returns_empty(self):
+        result = self._call(json.dumps({"key": "value"}), category="Travel")
+        assert result == []
+
+    def test_normalize_history_limits_to_last_10_items(self):
+        items = [{"role": "user", "text": f"msg {i}"} for i in range(20)]
+        history = json.dumps(items)
+        result = self._call(history, category=None)
+        # 10 items → 10 lines
+        assert len(result) == 10
+
+    def test_normalize_history_skips_dict_with_empty_text(self):
+        history = json.dumps([
+            {"role": "user", "text": ""},
+            {"role": "assistant", "text": "Valid reply"},
+        ])
+        result = self._call(history, category=None)
+        assert "User: " not in result
+        assert "Assistant: Valid reply" in result
+
+    def test_normalize_history_string_items_included(self):
+        history = json.dumps(["User: hi", "Assistant: hello"])
+        result = self._call(history, category=None)
+        assert "User: hi" in result
+        assert "Assistant: hello" in result
+
+    def test_normalize_history_empty_string_items_skipped(self):
+        history = json.dumps(["", "  ", "User: hello"])
+        result = self._call(history, category=None)
+        assert "" not in result
+        assert "User: hello" in result
+
+
+# ---------------------------------------------------------------------------
+# transcribe_audio
+# ---------------------------------------------------------------------------
+
+class TestTranscribeAudio:
+    def test_transcribe_audio_happy_path(self):
+        mock_stt = MagicMock()
+        mock_stt.transcribe.return_value = "Hello world"
+
+        with patch("app.core.ai_services.get_stt_service", return_value=mock_stt):
+            from app.core.ai_services import transcribe_audio
+            result = transcribe_audio(b"fake-audio-bytes", filename="test.webm")
+
+        assert result == "Hello world"
+
+    def test_transcribe_audio_stt_exception_returns_empty_string(self):
+        mock_stt = MagicMock()
+        mock_stt.transcribe.side_effect = RuntimeError("STT down")
+
+        with patch("app.core.ai_services.get_stt_service", return_value=mock_stt):
+            from app.core.ai_services import transcribe_audio
+            result = transcribe_audio(b"audio", filename="test.webm")
+
+        assert result == ""
+
+    def test_transcribe_audio_passes_filename_to_stt(self):
+        mock_stt = MagicMock()
+        mock_stt.transcribe.return_value = "transcript"
+
+        with patch("app.core.ai_services.get_stt_service", return_value=mock_stt):
+            from app.core.ai_services import transcribe_audio
+            transcribe_audio(b"audio", filename="recording.mp3")
+
+        mock_stt.transcribe.assert_called_once_with(b"audio", filename="recording.mp3")
+
+
+# ---------------------------------------------------------------------------
+# _synthesize_audio_bytes
+# ---------------------------------------------------------------------------
+
+class TestSynthesizeAudioBytes:
+    def test_synthesize_returns_bytes_on_success(self):
+        mock_pipeline = MagicMock()
+        mock_pipeline.tts_service.convert_text_to_speech.return_value = b"mp3data"
+
+        with patch("app.core.ai_services.get_voice_agent_pipeline", return_value=mock_pipeline):
+            from app.core.ai_services import _synthesize_audio_bytes
+            result = _synthesize_audio_bytes("Hello")
+
+        assert result == b"mp3data"
+
+    def test_synthesize_returns_empty_bytes_on_exception(self):
+        mock_pipeline = MagicMock()
+        mock_pipeline.tts_service.convert_text_to_speech.side_effect = RuntimeError("TTS down")
+
+        with patch("app.core.ai_services.get_voice_agent_pipeline", return_value=mock_pipeline):
+            from app.core.ai_services import _synthesize_audio_bytes
+            result = _synthesize_audio_bytes("Hello")
+
+        assert result == b""
+
+    def test_synthesize_returns_empty_bytes_when_tts_returns_none(self):
+        mock_pipeline = MagicMock()
+        mock_pipeline.tts_service.convert_text_to_speech.return_value = None
+
+        with patch("app.core.ai_services.get_voice_agent_pipeline", return_value=mock_pipeline):
+            from app.core.ai_services import _synthesize_audio_bytes
+            result = _synthesize_audio_bytes("Hello")
+
+        assert result == b""
+
+    def test_synthesize_returns_empty_bytes_when_tts_returns_empty_bytes(self):
+        mock_pipeline = MagicMock()
+        mock_pipeline.tts_service.convert_text_to_speech.return_value = b""
+
+        with patch("app.core.ai_services.get_voice_agent_pipeline", return_value=mock_pipeline):
+            from app.core.ai_services import _synthesize_audio_bytes
+            result = _synthesize_audio_bytes("Hello")
+
+        assert result == b""
+
+
+# ---------------------------------------------------------------------------
+# run_langraph_agent
+# ---------------------------------------------------------------------------
+
+class TestRunLangraphAgent:
+    def _mock_pipeline(self, response_text="Great answer!", audio_bytes=b"mp3"):
+        mock_pipeline = MagicMock()
+        mock_pipeline.run.return_value = {
+            "response_text": response_text,
+            "audio_bytes": audio_bytes,
+            "grammar_raw": None,
+            "messages": [],
+        }
+        return mock_pipeline
+
+    def test_run_langraph_agent_happy_path(self):
+        mock_pipeline = self._mock_pipeline("Great answer!", b"mp3data")
+
+        with patch("app.core.ai_services.get_voice_agent_pipeline", return_value=mock_pipeline):
+            from app.core.ai_services import run_langraph_agent
+            text, audio, grammar, tool_steps = run_langraph_agent("Tell me about IELTS", history=[])
+
+        assert text == "Great answer!"
+        assert audio == b"mp3data"
+        assert grammar is None
+
+    def test_run_langraph_agent_passes_history(self):
+        mock_pipeline = self._mock_pipeline()
+        history = ["Topic: IELTS", "User: Hello"]
+
+        with patch("app.core.ai_services.get_voice_agent_pipeline", return_value=mock_pipeline):
+            from app.core.ai_services import run_langraph_agent
+            run_langraph_agent("Next question", history=history)
+
+        mock_pipeline.run.assert_called_once_with(
+            user_input="Next question", history=history, voice_gender=None, voice_accent=None, category=None, topic=None, user_id=None
+        )
+
+    def test_run_langraph_agent_none_history_defaults_to_empty(self):
+        mock_pipeline = self._mock_pipeline()
+
+        with patch("app.core.ai_services.get_voice_agent_pipeline", return_value=mock_pipeline):
+            from app.core.ai_services import run_langraph_agent
+            run_langraph_agent("Hello", history=None)
+
+        mock_pipeline.run.assert_called_once_with(user_input="Hello", history=[], voice_gender=None, voice_accent=None, category=None, topic=None, user_id=None)
+
+    def test_run_langraph_agent_empty_response_text_returns_fallback(self):
+        mock_pipeline = MagicMock()
+        mock_pipeline.run.return_value = {"response_text": "", "audio_bytes": b"", "grammar_raw": None, "messages": []}
+
+        mock_tts_pipeline = MagicMock()
+        mock_tts_pipeline.tts_service.convert_text_to_speech.return_value = b"fallback-audio"
+
+        with (
+            patch("app.core.ai_services.get_voice_agent_pipeline", return_value=mock_pipeline),
+            patch("app.core.ai_services._synthesize_audio_bytes", return_value=b"fallback-audio"),
+        ):
+            from app.core.ai_services import run_langraph_agent
+            text, audio, grammar, tool_steps = run_langraph_agent("test")
+
+        assert "Sorry" in text
+        assert audio == b"fallback-audio"
+        assert grammar is None
+
+    def test_run_langraph_agent_pipeline_exception_returns_fallback(self):
+        mock_pipeline = MagicMock()
+        mock_pipeline.run.side_effect = RuntimeError("LLM crashed")
+
+        with (
+            patch("app.core.ai_services.get_voice_agent_pipeline", return_value=mock_pipeline),
+            patch("app.core.ai_services._synthesize_audio_bytes", return_value=b"fallback"),
+        ):
+            from app.core.ai_services import run_langraph_agent
+            text, audio, grammar, tool_steps = run_langraph_agent("test")
+
+        assert "Sorry" in text
+        assert audio == b"fallback"
+        assert grammar is None
+
+    def test_run_langraph_agent_text_no_audio_retries_tts(self):
+        """When pipeline returns text but empty audio, _synthesize_audio_bytes is called."""
+        mock_pipeline = MagicMock()
+        mock_pipeline.run.return_value = {"response_text": "Nice job!", "audio_bytes": b"", "grammar_raw": None, "messages": []}
+
+        with (
+            patch("app.core.ai_services.get_voice_agent_pipeline", return_value=mock_pipeline),
+            patch("app.core.ai_services._synthesize_audio_bytes", return_value=b"retry-audio") as mock_synth,
+        ):
+            from app.core.ai_services import run_langraph_agent
+            text, audio, grammar, tool_steps = run_langraph_agent("question")
+
+        mock_synth.assert_called_once_with("Nice job!", voice_gender=None, voice_accent=None)
+        assert text == "Nice job!"
+        assert audio == b"retry-audio"
+        assert grammar is None
+
+    def test_run_langraph_agent_passes_voice_gender(self):
+        mock_pipeline = self._mock_pipeline()
+
+        with patch("app.core.ai_services.get_voice_agent_pipeline", return_value=mock_pipeline):
+            from app.core.ai_services import run_langraph_agent
+            run_langraph_agent("Hello", history=[], voice_gender="Female")
+
+        mock_pipeline.run.assert_called_once_with(
+            user_input="Hello", history=[], voice_gender="Female", voice_accent=None, category=None, topic=None, user_id=None
+        )
+
+
+# ---------------------------------------------------------------------------
+# dynamic prompt architecture
+# ---------------------------------------------------------------------------
+
+class TestPromptArchitecture:
+    def test_build_system_prompt_layers_base_category_and_topic(self):
+        from app.prompts.prompt_builder import build_system_prompt
+
+        prompt = build_system_prompt(category="travel", topic="travel_airport")
+
+        assert "AI English-speaking coach" in prompt
+        assert "## Category: travel" in prompt
+        assert "## Topic: travel_airport" in prompt
+        assert "airport" in prompt.lower()
+
+    def test_build_system_prompt_uses_unknown_topic_fallback(self):
+        from app.prompts.prompt_builder import build_system_prompt
+
+        prompt = build_system_prompt(category="daily", topic="Meeting a neighbor")
+
+        assert "## Category: daily" in prompt
+        assert "Meeting a neighbor" in prompt
+
+
+    def test_extract_prompt_context_reads_category_and_topic_lines(self):
+        from app.prompts.prompt_builder import extract_prompt_context
+
+        category, topic = extract_prompt_context([
+            "Category: Job Interview",
+            "Topic: Salary negotiation",
+            "User: hello",
+        ])
+
+        assert category == "Job Interview"
+        assert topic == "Salary negotiation"
+
+
+# ---------------------------------------------------------------------------
+# ElevenLabsTTS
+# ---------------------------------------------------------------------------
+
+class TestElevenLabsTTS:
+    def test_resolve_voice_id_uses_male_voice_when_requested(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_VOICE_ID", "default-voice")
+        monkeypatch.setenv("ELEVENLABS_US_MALE_VOICE_ID", "male-voice")
+        monkeypatch.setenv("ELEVENLABS_US_FEMALE_VOICE_ID", "female-voice")
+
+        from app.services.elevenlabs_tts import ElevenLabsTTS
+
+        assert ElevenLabsTTS()._resolve_voice_id("  Male  ", "us") == "male-voice"
+
+    def test_resolve_voice_id_uses_female_voice_when_requested(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_VOICE_ID", "default-voice")
+        monkeypatch.setenv("ELEVENLABS_US_MALE_VOICE_ID", "male-voice")
+        monkeypatch.setenv("ELEVENLABS_US_FEMALE_VOICE_ID", "female-voice")
+
+        from app.services.elevenlabs_tts import ElevenLabsTTS
+
+        assert ElevenLabsTTS()._resolve_voice_id("Female", "us") == "female-voice"
+
+    def test_resolve_voice_id_falls_back_to_default_when_gender_env_unset(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_VOICE_ID", "default-voice")
+        monkeypatch.delenv("ELEVENLABS_US_MALE_VOICE_ID", raising=False)
+
+        from app.services.elevenlabs_tts import ElevenLabsTTS
+
+        assert ElevenLabsTTS()._resolve_voice_id("male", "us") == "default-voice"
+
+    def test_resolve_voice_id_does_not_use_female_when_male_requested(self, monkeypatch):
+        monkeypatch.delenv("ELEVENLABS_VOICE_ID", raising=False)
+        monkeypatch.delenv("ELEVENLABS_US_MALE_VOICE_ID", raising=False)
+        monkeypatch.setenv("ELEVENLABS_US_FEMALE_VOICE_ID", "female-voice")
+
+        from app.services.elevenlabs_tts import ElevenLabsTTS
+
+        assert ElevenLabsTTS()._resolve_voice_id("male", "us") == ""
+
+    def test_resolve_voice_id_does_not_use_male_when_female_requested(self, monkeypatch):
+        monkeypatch.delenv("ELEVENLABS_VOICE_ID", raising=False)
+        monkeypatch.setenv("ELEVENLABS_US_MALE_VOICE_ID", "male-voice")
+        monkeypatch.delenv("ELEVENLABS_US_FEMALE_VOICE_ID", raising=False)
+
+        from app.services.elevenlabs_tts import ElevenLabsTTS
+
+        assert ElevenLabsTTS()._resolve_voice_id("female", "us") == ""
+
+    def test_resolve_voice_id_invalid_gender_uses_default(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_VOICE_ID", "default-voice")
+        monkeypatch.setenv("ELEVENLABS_US_MALE_VOICE_ID", "male-voice")
+
+        from app.services.elevenlabs_tts import ElevenLabsTTS
+
+        assert ElevenLabsTTS()._resolve_voice_id("robot") == "default-voice"
+
+    def test_resolve_voice_id_no_gender_requires_default_voice(self, monkeypatch):
+        monkeypatch.delenv("ELEVENLABS_VOICE_ID", raising=False)
+        monkeypatch.setenv("ELEVENLABS_US_MALE_VOICE_ID", "male-voice")
+        monkeypatch.setenv("ELEVENLABS_US_FEMALE_VOICE_ID", "female-voice")
+
+        from app.services.elevenlabs_tts import ElevenLabsTTS
+
+        assert ElevenLabsTTS()._resolve_voice_id(None) == ""
+
+    def test_resolve_voice_id_returns_empty_when_no_voice_configured(self, monkeypatch):
+        monkeypatch.delenv("ELEVENLABS_VOICE_ID", raising=False)
+        monkeypatch.delenv("ELEVENLABS_US_MALE_VOICE_ID", raising=False)
+        monkeypatch.delenv("ELEVENLABS_US_FEMALE_VOICE_ID", raising=False)
+
+        from app.services.elevenlabs_tts import ElevenLabsTTS
+
+        assert ElevenLabsTTS()._resolve_voice_id("female", "us") == ""
+
+    def test_convert_text_to_speech_missing_api_key_does_not_call_http(self, monkeypatch):
+        monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+        monkeypatch.setenv("ELEVENLABS_VOICE_ID", "default-voice")
+
+        from app.services.elevenlabs_tts import ElevenLabsTTS
+
+        with patch("app.services.elevenlabs_tts.requests.post") as mock_post:
+            result = ElevenLabsTTS().convert_text_to_speech("Hello")
+
+        assert result == b""
+        mock_post.assert_not_called()
+
+    def test_convert_text_to_speech_missing_voice_id_does_not_call_http(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+        monkeypatch.delenv("ELEVENLABS_VOICE_ID", raising=False)
+        monkeypatch.delenv("ELEVENLABS_US_MALE_VOICE_ID", raising=False)
+        monkeypatch.delenv("ELEVENLABS_US_FEMALE_VOICE_ID", raising=False)
+
+        from app.services.elevenlabs_tts import ElevenLabsTTS
+
+        with patch("app.services.elevenlabs_tts.requests.post") as mock_post:
+            result = ElevenLabsTTS().convert_text_to_speech("Hello")
+
+        assert result == b""
+        mock_post.assert_not_called()
+
+    def test_convert_text_to_speech_strips_api_key_before_request(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "  test-key  ")
+        monkeypatch.setenv("ELEVENLABS_VOICE_ID", "default-voice")
+        monkeypatch.setenv("ELEVENLABS_MODEL_ID", "test-model")
+        mock_response = MagicMock(status_code=200, content=b"mp3data", headers={"Content-Type": "audio/mpeg"})
+        mock_response.iter_content.return_value = [b"mp3", b"data"]
+
+        from app.services.elevenlabs_tts import ElevenLabsTTS
+
+        with patch("app.services.elevenlabs_tts.requests.post", return_value=mock_response) as mock_post:
+            result = ElevenLabsTTS().convert_text_to_speech("Hello")
+
+        assert result == b"mp3data"
+        _, kwargs = mock_post.call_args
+        assert kwargs["headers"]["xi-api-key"] == "test-key"
+        assert kwargs["json"] == {"text": "Hello", "model_id": "test-model"}
+        assert kwargs["timeout"] == 60
+
+    def test_convert_text_to_speech_does_not_log_api_key(self, monkeypatch, caplog):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "secret-test-key")
+        monkeypatch.setenv("ELEVENLABS_VOICE_ID", "default-voice")
+        mock_response = MagicMock(status_code=401, content=b"", text="unauthorized", headers={})
+
+        from app.services.elevenlabs_tts import ElevenLabsTTS
+
+        with patch("app.services.elevenlabs_tts.requests.post", return_value=mock_response):
+            ElevenLabsTTS().convert_text_to_speech("Hello")
+
+        assert "secret-test-key" not in caplog.text
+
+    def test_convert_text_to_speech_401_returns_empty_bytes(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+        monkeypatch.setenv("ELEVENLABS_VOICE_ID", "default-voice")
+        mock_response = MagicMock(status_code=401, content=b"", text="unauthorized", headers={})
+
+        from app.services.elevenlabs_tts import ElevenLabsTTS
+
+        with patch("app.services.elevenlabs_tts.requests.post", return_value=mock_response) as mock_post:
+            result = ElevenLabsTTS().convert_text_to_speech("Hello")
+
+        assert result == b""
+        mock_post.assert_called_once()
+
+    def test_convert_text_to_speech_403_returns_empty_bytes(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+        monkeypatch.setenv("ELEVENLABS_VOICE_ID", "default-voice")
+        mock_response = MagicMock(status_code=403, content=b"", text="forbidden", headers={})
+
+        from app.services.elevenlabs_tts import ElevenLabsTTS
+
+        with patch("app.services.elevenlabs_tts.requests.post", return_value=mock_response):
+            result = ElevenLabsTTS().convert_text_to_speech("Hello")
+
+        assert result == b""
+
+    def test_convert_text_to_speech_500_returns_empty_bytes(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+        monkeypatch.setenv("ELEVENLABS_VOICE_ID", "default-voice")
+        mock_response = MagicMock(status_code=500, content=b"", text="server error", headers={})
+
+        from app.services.elevenlabs_tts import ElevenLabsTTS
+
+        with patch("app.services.elevenlabs_tts.requests.post", return_value=mock_response):
+            result = ElevenLabsTTS().convert_text_to_speech("Hello")
+
+        assert result == b""
+
+    def test_convert_text_to_speech_timeout_returns_empty_bytes(self, monkeypatch):
+        import requests
+
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+        monkeypatch.setenv("ELEVENLABS_VOICE_ID", "default-voice")
+
+        from app.services.elevenlabs_tts import ElevenLabsTTS
+
+        with patch("app.services.elevenlabs_tts.requests.post", side_effect=requests.Timeout("timed out")):
+            result = ElevenLabsTTS().convert_text_to_speech("Hello")
+
+        assert result == b""
+
+    def test_convert_text_to_speech_empty_text_does_not_call_http(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+        monkeypatch.setenv("ELEVENLABS_VOICE_ID", "default-voice")
+
+        from app.services.elevenlabs_tts import ElevenLabsTTS
+
+        with patch("app.services.elevenlabs_tts.requests.post") as mock_post:
+            result = ElevenLabsTTS().convert_text_to_speech("   ")
+
+        assert result == b""
+        mock_post.assert_not_called()
+
+    def test_convert_text_to_speech_rejects_empty_audio_body(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+        monkeypatch.setenv("ELEVENLABS_VOICE_ID", "default-voice")
+        mock_response = MagicMock(status_code=200, content=b"", headers={"Content-Type": "audio/mpeg"})
+        mock_response.iter_content.return_value = []
+
+        from app.services.elevenlabs_tts import ElevenLabsTTS
+
+        with patch("app.services.elevenlabs_tts.requests.post", return_value=mock_response):
+            result = ElevenLabsTTS().convert_text_to_speech("Hello")
+
+        assert result == b""
+
+    def test_convert_text_to_speech_handles_content_read_failure(self, monkeypatch):
+        import requests
+
+        class BrokenContentResponse:
+            status_code = 200
+            headers = {"Content-Type": "audio/mpeg"}
+
+            def iter_content(self, chunk_size):
+                raise requests.exceptions.ChunkedEncodingError("interrupted")
+
+            def close(self):
+                pass
+
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+        monkeypatch.setenv("ELEVENLABS_VOICE_ID", "default-voice")
+
+        from app.services.elevenlabs_tts import ElevenLabsTTS
+
+        with patch("app.services.elevenlabs_tts.requests.post", return_value=BrokenContentResponse()):
+            result = ElevenLabsTTS().convert_text_to_speech("Hello")
+
+        assert result == b""
+
+    def test_convert_text_to_speech_rejects_incomplete_audio_body(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+        monkeypatch.setenv("ELEVENLABS_VOICE_ID", "default-voice")
+        mock_response = MagicMock(
+            status_code=200,
+            content=b"mp3",
+            headers={"Content-Type": "audio/mpeg", "Content-Length": "10"},
+        )
+        mock_response.iter_content.return_value = [b"mp3"]
+
+        from app.services.elevenlabs_tts import ElevenLabsTTS
+
+        with patch("app.services.elevenlabs_tts.requests.post", return_value=mock_response):
+            result = ElevenLabsTTS().convert_text_to_speech("Hello")
+
+        assert result == b""
+
+    def test_convert_text_to_speech_rejects_non_audio_content_type(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+        monkeypatch.setenv("ELEVENLABS_VOICE_ID", "default-voice")
+        mock_response = MagicMock(status_code=200, content=b'{"error":"bad"}', headers={"Content-Type": "application/json"})
+        mock_response.iter_content.return_value = [b'{"error":"bad"}']
+
+        from app.services.elevenlabs_tts import ElevenLabsTTS
+
+        with patch("app.services.elevenlabs_tts.requests.post", return_value=mock_response):
+            result = ElevenLabsTTS().convert_text_to_speech("Hello")
+
+        assert result == b""
+
+
+class TestSynthesizeAudioBytesAccent:
+    def test_synthesize_forwards_voice_accent_to_tts(self):
+        mock_pipeline = MagicMock()
+        mock_pipeline.tts_service.convert_text_to_speech.return_value = b"mp3"
+
+        with patch("app.core.ai_services.get_voice_agent_pipeline", return_value=mock_pipeline):
+            from app.core.ai_services import _synthesize_audio_bytes
+            _synthesize_audio_bytes("Hello", voice_gender="female", voice_accent="uk")
+
+        mock_pipeline.tts_service.convert_text_to_speech.assert_called_once_with(
+            "Hello", voice_gender="female", voice_accent="uk"
+        )
+
+    def test_synthesize_voice_accent_defaults_to_none(self):
+        mock_pipeline = MagicMock()
+        mock_pipeline.tts_service.convert_text_to_speech.return_value = b"mp3"
+
+        with patch("app.core.ai_services.get_voice_agent_pipeline", return_value=mock_pipeline):
+            from app.core.ai_services import _synthesize_audio_bytes
+            _synthesize_audio_bytes("Hello")
+
+        mock_pipeline.tts_service.convert_text_to_speech.assert_called_once_with(
+            "Hello", voice_gender=None, voice_accent=None
+        )
+
+
+class TestRunLangraphAgentAccent:
+    def _mock_pipeline(self, response_text="Reply!", audio_bytes=b"mp3"):
+        mock_pipeline = MagicMock()
+        mock_pipeline.run.return_value = {
+            "response_text": response_text,
+            "audio_bytes": audio_bytes,
+            "grammar_raw": None,
+            "messages": [],
+        }
+        return mock_pipeline
+
+    def test_run_langraph_agent_forwards_voice_accent_to_pipeline(self):
+        mock_pipeline = self._mock_pipeline()
+
+        with patch("app.core.ai_services.get_voice_agent_pipeline", return_value=mock_pipeline):
+            from app.core.ai_services import run_langraph_agent
+            run_langraph_agent("Hi", voice_gender="male", voice_accent="uk")
+
+        mock_pipeline.run.assert_called_once()
+        _, kwargs = mock_pipeline.run.call_args
+        assert kwargs.get("voice_accent") == "uk"
+
+    def test_run_langraph_agent_voice_accent_defaults_to_none(self):
+        mock_pipeline = self._mock_pipeline()
+
+        with patch("app.core.ai_services.get_voice_agent_pipeline", return_value=mock_pipeline):
+            from app.core.ai_services import run_langraph_agent
+            run_langraph_agent("Hi")
+
+        _, kwargs = mock_pipeline.run.call_args
+        assert kwargs.get("voice_accent") is None
+
+
+def test_run_langraph_agent_blocked_skips_tts(monkeypatch):
+    """When the pipeline returns guardrail_blocked=True, run_langraph_agent must
+    return empty audio bytes without calling the TTS fallback."""
+    from app.core import ai_services
+
+    blocked_state = {
+        "response_text": "I'm sorry, I can't help with that topic. Let's keep our practice focused on everyday English conversation!",
+        "audio_bytes": b"",
+        "grammar_raw": None,
+        "messages": [],
+        "guardrail_blocked": True,
+    }
+
+    mock_pipeline = MagicMock()
+    mock_pipeline.run.return_value = blocked_state
+
+    synthesize_calls = []
+
+    def fake_synthesize(text, voice_gender=None, voice_accent=None):
+        synthesize_calls.append(text)
+        return b"tts-audio"
+
+    monkeypatch.setattr(ai_services, "get_voice_agent_pipeline", lambda: mock_pipeline)
+    monkeypatch.setattr(ai_services, "_synthesize_audio_bytes", fake_synthesize)
+
+    text, audio, grammar, steps = ai_services.run_langraph_agent(user_input="How do I hack?")
+
+    assert audio == b""
+    assert len(synthesize_calls) == 0, "TTS must not be called for guardrail-blocked responses"
+    assert "sorry" in text.lower()

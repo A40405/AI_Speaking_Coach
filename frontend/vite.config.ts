@@ -1,0 +1,48 @@
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
+import path from 'path';
+
+const port = Number(process.env.PORT) || 5173;
+const basePath = process.env.BASE_PATH || '/';
+//  build
+export default defineConfig({
+  base: basePath,
+  plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: {
+      '@': path.resolve(import.meta.dirname, 'src'),
+    },
+    dedupe: ['react', 'react-dom'],
+  },
+  root: path.resolve(import.meta.dirname),
+  envDir: '../',
+  build: {
+    outDir: path.resolve(import.meta.dirname, 'dist/public'),
+    emptyOutDir: true,
+    sourcemap: false,
+  },
+  server: {
+    port,
+    host: '0.0.0.0',
+    allowedHosts: true,
+    fs: {
+      strict: true,
+      deny: ['**/.*'],
+    },
+    proxy: {
+      '/voice-agent-audio': {
+        target: 'http://localhost:9000',
+        changeOrigin: false,
+        headers: {
+          Host: 'minio:9000'
+        }
+      },
+    },
+  },
+  preview: {
+    port,
+    host: '0.0.0.0',
+    allowedHosts: true,
+  },
+});

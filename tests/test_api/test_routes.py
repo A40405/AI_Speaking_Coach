@@ -1,0 +1,1091 @@
+# tests/test_api/test_routes.py
+"""
+Unit tests for app.api.routes
+Covers: POST /api/auth/login
+        POST /api/auth/register
+        GET  /api/auth/me
+        POST /api/chat/respond
+        GET  /api/conversations
+        GET  /api/conversations/{id}/messages
+
+All external services (DB, MinIO, LLM, TTS, STT) are mocked.
+"""
+
+import base64
+import hashlib
+import io
+import os
+import sys
+import tempfile
+import types
+import uuid
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch, call
+
+# ── Stub `minio` BEFORE any app import ───────────────────────────────────────
+_minio_stub = types.ModuleType("minio")
+_minio_stub.Minio = MagicMock  # type: ignore[attr-defined]
+_minio_error_stub = types.ModuleType("minio.error")
+_minio_error_stub.S3Error = Exception  # type: ignore[attr-defined]
+sys.modules.setdefault("minio", _minio_stub)
+sys.modules.setdefault("minio.error", _minio_error_stub)
+
+# ── Env BEFORE importing app ──────────────────────────────────────────────────
+os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-pytest-only-xx")
+os.environ.setdefault("POSTGRES_PASSWORD", "test-password-strong-2026")
+os.environ.setdefault("POSTGRES_DB", "test_db")
+os.environ.setdefault("POSTGRES_USER", "test_user")
+os.environ.setdefault("MINIO_ACCESS_KEY", "minioadmin")
+os.environ.setdefault("MINIO_SECRET_KEY", "minio-test-secret-2026")
+os.environ.setdefault("GROQ_API_KEY", "test-groq-key")
+os.environ.setdefault("ELEVENLABS_API_KEY", "test-el-key")
+
+import pytest
+from fastapi.testclient import TestClient
+from starlette.datastructures import UploadFile as StarletteUploadFile
+from tests.helpers.db_mocks import make_mock_connection
+
+# Import app ONCE — reused across all tests with per-test patches
+with (
+    patch("app.core.database.init_db_pool"),
+    patch("app.core.storage.init_storage"),
+):
+    from app.main import app
+
+from app.core.security import create_access_token, hash_password
+from app.services.email_service import PasswordResetEmailDeliveryError
+
+
+# ===========================================================================
+# Helpers
+# ===========================================================================
+
+def _new_uuid() -> str:
+    return str(uuid.uuid4())
+
+
+def _fake_wav_bytes() -> bytes:
+    return b"RIFF\x24\x00\x00\x00WAVEfmt " + b"\x00" * 32
+
+
+def _fake_webm_bytes() -> bytes:
+    return b"\x1A\x45\xDF\xA3" + b"\x00" * 16
+
+
+def _make_bearer(user_id: str, email: str = "user@example.com") -> dict:
+    token, _ = create_access_token(user_id=user_id, email=email)
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _make_conn(fetchone_side_effect=(), fetchall_value=None, fetchone_by_sql=None, fetchall_by_sql=None):
+    return make_mock_connection(
+        fetchone_side_effect=fetchone_side_effect,
+        fetchall_value=fetchall_value,
+        fetchone_by_sql=fetchone_by_sql,
+        fetchall_by_sql=fetchall_by_sql,
+    )
+
+
+def _sql_calls(cursor) -> list[str]:
+    return [" ".join(call.args[0].lower().split()) for call in cursor.execute.call_args_list]
+
+
+@contextmanager
+def _client(conn=None):
+    """
+    Yield a TestClient with get_connection mocked to *conn*.
+    *conn* may be a (conn, cursor) pair or None for a bare mock.
+    """
+    if conn is None:
+        real_conn, cursor = _make_conn()
+    else:
+        real_conn, cursor = conn
+
+    with (
+        patch("app.api.auth.get_connection", return_value=real_conn),
+        patch("app.api.chat.get_connection", return_value=real_conn),
+        patch("app.api.conversations.get_connection", return_value=real_conn),
+    ):
+        with TestClient(app, raise_server_exceptions=False) as c:
+            yield c, cursor
+
+
+@contextmanager
+def _transactional_client(conn=None):
+    if conn is None:
+        real_conn, cursor = _make_conn()
+    else:
+        real_conn, cursor = conn
+
+    @contextmanager
+    def fake_get_connection():
+        try:
+            yield real_conn
+            real_conn.commit()
+        except Exception:
+            real_conn.rollback()
+            raise
+
+    with (
+        patch("app.api.auth.get_connection", fake_get_connection),
+        patch("app.api.chat.get_connection", fake_get_connection),
+        patch("app.api.conversations.get_connection", fake_get_connection),
+    ):
+        with TestClient(app, raise_server_exceptions=False) as c:
+            yield c, cursor, real_conn
+
+
+# ===========================================================================
+# POST /api/auth/login
+# ===========================================================================
+
+class TestLogin:
+    _user_id = _new_uuid()
+    _email = "alice@example.com"
+    _password = "Password123!"
+
+    def _ok_conn(self):
+        pw_hash = hash_password(self._password)
+        return _make_conn(
+            fetchone_side_effect=[(self._user_id, self._email, pw_hash, "Alice", "B2")]
+        )
+
+    def test_login_happy_path_returns_200_with_token(self):
+        with _client(self._ok_conn()) as (c, _):
+            r = c.post("/api/auth/login", json={"email": self._email, "password": self._password})
+        assert r.status_code == 200
+        body = r.json()
+        assert "access_token" in body
+        assert body["token_type"] == "bearer"
+        assert body["expires_in"] > 0
+        assert body["user"]["email"] == self._email
+        assert body["user"]["id"] == self._user_id
+
+    def test_login_response_contains_display_name(self):
+        with _client(self._ok_conn()) as (c, _):
+            r = c.post("/api/auth/login", json={"email": self._email, "password": self._password})
+        assert r.json()["user"]["display_name"] == "Alice"
+
+    def test_login_email_is_lowercased(self):
+        with _client(self._ok_conn()) as (c, _):
+            r = c.post("/api/auth/login", json={"email": "ALICE@EXAMPLE.COM", "password": self._password})
+        assert r.status_code == 200
+
+    def test_login_user_not_found_returns_401(self):
+        conn = _make_conn(fetchone_side_effect=[None])
+        with _client(conn) as (c, _):
+            r = c.post("/api/auth/login", json={"email": "ghost@example.com", "password": "AnyPass1!"})
+        assert r.status_code == 401
+
+    def test_login_wrong_password_returns_401(self):
+        with _client(self._ok_conn()) as (c, _):
+            r = c.post("/api/auth/login", json={"email": self._email, "password": "WrongPass!"})
+        assert r.status_code == 401
+
+    def test_login_invalid_stored_hash_returns_401(self):
+        conn = _make_conn(fetchone_side_effect=[(self._user_id, self._email, "not-a-bcrypt-hash", "Alice", "B2")])
+        with _client(conn) as (c, _):
+            r = c.post("/api/auth/login", json={"email": self._email, "password": self._password})
+        assert r.status_code == 401
+
+    def test_login_invalid_email_format_returns_422(self):
+        with _client() as (c, _):
+            r = c.post("/api/auth/login", json={"email": "not-an-email", "password": "pass"})
+        assert r.status_code == 422
+
+    def test_login_missing_password_returns_422(self):
+        with _client() as (c, _):
+            r = c.post("/api/auth/login", json={"email": self._email})
+        assert r.status_code == 422
+
+
+# ===========================================================================
+# POST /api/auth/register
+# ===========================================================================
+
+class TestRegister:
+    _user_id = _new_uuid()
+    _email = "bob@example.com"
+    _password = "Secure1Pass!AB"
+
+    def _ok_conn(self):
+        return _make_conn(
+            fetchone_side_effect=[(self._user_id, self._email, "Bob", "A2")]
+        )
+
+    def test_register_happy_path_returns_201(self):
+        with _client(self._ok_conn()) as (c, _):
+            r = c.post(
+                "/api/auth/register",
+                json={"email": self._email, "password": self._password, "display_name": "Bob", "english_level": "A2"},
+            )
+        assert r.status_code == 201
+        body = r.json()
+        assert "access_token" in body
+        assert body["user"]["email"] == self._email
+
+    def test_register_response_token_is_valid_jwt(self):
+        from app.core.security import decode_token
+        with _client(self._ok_conn()) as (c, _):
+            r = c.post("/api/auth/register", json={"email": self._email, "password": self._password})
+        assert r.status_code == 201
+        payload = decode_token(r.json()["access_token"])
+        assert payload["sub"] == self._user_id
+
+    def test_register_display_name_defaults_to_email_prefix(self):
+        conn = _make_conn(fetchone_side_effect=[(_new_uuid(), "charlie@example.com", "charlie", None)])
+        with _client(conn) as (c, _):
+            r = c.post("/api/auth/register", json={"email": "charlie@example.com", "password": "ValidPass1!XY"})
+        assert r.status_code == 201
+
+    def test_register_password_too_short_returns_400(self):
+        with _client() as (c, _):
+            r = c.post("/api/auth/register", json={"email": self._email, "password": "short"})
+        assert r.status_code == 400
+        assert "12 characters" in r.json()["detail"]
+
+    def test_register_duplicate_email_returns_400(self):
+        import psycopg2
+        conn, cursor = _make_conn()
+        cursor.execute.side_effect = psycopg2.errors.UniqueViolation("dup key")
+        with _client((conn, cursor)) as (c, _):
+            r = c.post("/api/auth/register", json={"email": self._email, "password": self._password})
+        assert r.status_code == 400
+        assert "already registered" in r.json()["detail"]
+
+    def test_register_invalid_email_returns_422(self):
+        with _client() as (c, _):
+            r = c.post("/api/auth/register", json={"email": "bademail@@", "password": self._password})
+        assert r.status_code == 422
+
+
+# ===========================================================================
+# POST /api/auth/forgot-password
+# ===========================================================================
+
+class TestForgotPassword:
+    _user_id = _new_uuid()
+    _email = "recover@example.com"
+
+    def test_existing_local_password_account_sends_email_and_returns_preview_link_in_development(self):
+        conn = _make_conn(fetchone_by_sql={"from users": (self._user_id, True)})
+        with (
+            patch("app.api.auth.APP_ENV", "development"),
+            patch("app.api.auth.FRONTEND_URL", "http://localhost:5173"),
+            patch("app.api.auth.EMAIL_ENABLED", True),
+            patch("app.api.auth.send_password_reset_email") as mock_send,
+        ):
+            with _transactional_client(conn) as (c, cursor, real_conn):
+                r = c.post("/api/auth/forgot-password", json={"email": self._email})
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["preview_reset_url"].startswith("http://localhost:5173/reset-password?token=")
+        mock_send.assert_called_once()
+        assert mock_send.call_args.kwargs["to_email"] == self._email
+        assert mock_send.call_args.kwargs["reset_url"] == body["preview_reset_url"]
+        assert mock_send.call_args.kwargs["expires_minutes"] == 5
+        sql_calls = _sql_calls(cursor)
+        assert any("update password_reset_tokens set revoked_at = now()" in sql for sql in sql_calls)
+        assert any("insert into password_reset_tokens" in sql for sql in sql_calls)
+
+        revoke_call = next(
+            sql_call
+            for sql_call in cursor.execute.call_args_list
+            if "update password_reset_tokens set revoked_at = now()" in " ".join(sql_call.args[0].lower().split())
+        )
+        assert revoke_call.args[1] == (self._user_id,)
+
+        insert_call = next(
+            sql_call
+            for sql_call in cursor.execute.call_args_list
+            if "insert into password_reset_tokens" in " ".join(sql_call.args[0].lower().split())
+        )
+        assert cursor.execute.call_args_list.index(revoke_call) < cursor.execute.call_args_list.index(insert_call)
+        expires_at = insert_call.args[1][2]
+        seconds_until_expiry = (expires_at - datetime.now(timezone.utc)).total_seconds()
+        assert 240 <= seconds_until_expiry <= 300
+        real_conn.rollback.assert_not_called()
+
+    def test_existing_local_password_account_hides_preview_link_in_production(self):
+        conn = _make_conn(fetchone_by_sql={"from users": (self._user_id, True)})
+        with (
+            patch("app.api.auth.APP_ENV", "production"),
+            patch("app.api.auth.FRONTEND_URL", "https://app.englishspeakingagent.com"),
+            patch("app.api.auth.EMAIL_ENABLED", True),
+            patch("app.api.auth.send_password_reset_email") as mock_send,
+        ):
+            with _transactional_client(conn) as (c, _, _real_conn):
+                r = c.post("/api/auth/forgot-password", json={"email": self._email})
+
+        assert r.status_code == 200
+        assert r.json()["preview_reset_url"] is None
+        mock_send.assert_called_once()
+        assert mock_send.call_args.kwargs["reset_url"].startswith(
+            "https://app.englishspeakingagent.com/reset-password?token="
+        )
+
+    def test_existing_local_password_account_hides_preview_link_in_staging(self):
+        conn = _make_conn(fetchone_by_sql={"from users": (self._user_id, True)})
+        with (
+            patch("app.api.auth.APP_ENV", "staging"),
+            patch("app.api.auth.FRONTEND_URL", "https://staging.englishspeakingagent.com"),
+            patch("app.api.auth.EMAIL_ENABLED", True),
+            patch("app.api.auth.send_password_reset_email") as mock_send,
+        ):
+            with _transactional_client(conn) as (c, _cursor, _real_conn):
+                r = c.post("/api/auth/forgot-password", json={"email": self._email})
+
+        assert r.status_code == 200
+        assert r.json()["preview_reset_url"] is None
+        mock_send.assert_called_once()
+        assert mock_send.call_args.kwargs["reset_url"].startswith(
+            "https://staging.englishspeakingagent.com/reset-password?token="
+        )
+
+    def test_unknown_email_returns_200_and_does_not_send_email(self):
+        conn = _make_conn(fetchone_by_sql={"from users": None})
+        with (
+            patch("app.api.auth.EMAIL_ENABLED", True),
+            patch("app.api.auth.send_password_reset_email") as mock_send,
+        ):
+            with _transactional_client(conn) as (c, cursor, _real_conn):
+                r = c.post("/api/auth/forgot-password", json={"email": "ghost@example.com"})
+
+        assert r.status_code == 200
+        assert r.json()["preview_reset_url"] is None
+        mock_send.assert_not_called()
+        assert not any("insert into password_reset_tokens" in sql for sql in _sql_calls(cursor))
+
+    def test_one_character_local_part_is_masked_in_logs(self):
+        conn = _make_conn(fetchone_by_sql={"from users": None})
+        with patch("app.api.auth.logger.info") as mock_info:
+            with _transactional_client(conn) as (c, _cursor, _real_conn):
+                r = c.post("/api/auth/forgot-password", json={"email": "a@example.com"})
+
+        assert r.status_code == 200
+        mock_info.assert_any_call("Forgot password request email=%s", "*@example.com")
+        assert "a@example.com" not in str(mock_info.call_args_list)
+
+    def test_oauth_only_account_returns_200_and_does_not_send_email(self):
+        conn = _make_conn(fetchone_by_sql={"from users": (self._user_id, False)})
+        with (
+            patch("app.api.auth.EMAIL_ENABLED", True),
+            patch("app.api.auth.send_password_reset_email") as mock_send,
+        ):
+            with _transactional_client(conn) as (c, cursor, _real_conn):
+                r = c.post("/api/auth/forgot-password", json={"email": self._email})
+
+        assert r.status_code == 200
+        assert r.json()["preview_reset_url"] is None
+        mock_send.assert_not_called()
+        assert not any("insert into password_reset_tokens" in sql for sql in _sql_calls(cursor))
+
+    def test_delivery_failure_rolls_back_and_still_returns_generic_success(self):
+        conn = _make_conn(fetchone_by_sql={"from users": (self._user_id, True)})
+        def failing_send_password_reset_email(**_kwargs):
+            assert any("insert into password_reset_tokens" in sql for sql in _sql_calls(cursor))
+            raise PasswordResetEmailDeliveryError("smtp unavailable")
+
+        with (
+            patch("app.api.auth.APP_ENV", "development"),
+            patch("app.api.auth.EMAIL_ENABLED", True),
+        ):
+            with _transactional_client(conn) as (c, cursor, real_conn):
+                with patch(
+                    "app.api.auth.send_password_reset_email",
+                    side_effect=failing_send_password_reset_email,
+                ):
+                    r = c.post("/api/auth/forgot-password", json={"email": self._email})
+
+        assert r.status_code == 200
+        assert r.json() == {
+            "message": "If the account exists, a reset link has been generated.",
+            "preview_reset_url": None,
+        }
+        assert any("insert into password_reset_tokens" in sql for sql in _sql_calls(cursor))
+        real_conn.rollback.assert_called_once()
+        real_conn.commit.assert_not_called()
+
+
+# ===========================================================================
+# POST /api/auth/reset-password
+# ===========================================================================
+
+class TestResetPassword:
+    _user_id = _new_uuid()
+    _token_id = _new_uuid()
+    _token = "reset-token-123"
+    _new_password = "BrandNewPass1!AB"
+
+    def _conn(self):
+        token_hash = hashlib.sha256(self._token.encode("utf-8")).hexdigest()
+        return _make_conn(
+            fetchone_by_sql={
+                "from password_reset_tokens": (self._token_id, self._user_id),
+                token_hash: (self._token_id, self._user_id),
+            }
+        )
+
+    def test_reset_password_happy_path_updates_password_and_marks_token_used(self):
+        with _client(self._conn()) as (c, cursor):
+            r = c.post(
+                "/api/auth/reset-password",
+                json={"token": self._token, "new_password": self._new_password},
+            )
+
+        assert r.status_code == 200
+        sql_calls = _sql_calls(cursor)
+        assert any("update users set password_hash" in sql for sql in sql_calls)
+        assert any("update password_reset_tokens set used_at = now()" in sql for sql in sql_calls)
+
+        update_user_call = next(
+            call for call in cursor.execute.call_args_list if "update users set password_hash" in " ".join(call.args[0].lower().split())
+        )
+        hashed_password = update_user_call.args[1][0]
+        assert hashed_password != self._new_password
+        assert hashed_password.startswith("$2")
+
+    def test_reset_password_invalid_token_returns_400(self):
+        conn = _make_conn(fetchone_by_sql={"from password_reset_tokens": None})
+        with _client(conn) as (c, _):
+            r = c.post(
+                "/api/auth/reset-password",
+                json={"token": "bad-token", "new_password": self._new_password},
+            )
+
+        assert r.status_code == 400
+        assert "invalid or expired" in r.json()["detail"].lower()
+
+    def test_reset_password_weak_password_returns_400(self):
+        with _client() as (c, _):
+            r = c.post(
+                "/api/auth/reset-password",
+                json={"token": self._token, "new_password": "short"},
+            )
+
+        assert r.status_code == 400
+
+
+# ===========================================================================
+# POST /api/auth/change-password
+# ===========================================================================
+
+class TestChangePassword:
+    _user_id = _new_uuid()
+    _email = "secure@example.com"
+    _current_password = "CurrentPass1!AB"
+    _new_password = "UpdatedPass1!AB"
+
+    def _headers(self):
+        return _make_bearer(self._user_id, self._email)
+
+    def _ok_conn(self):
+        pw_hash = hash_password(self._current_password)
+        return _make_conn(fetchone_by_sql={"select password_hash": (pw_hash,)})
+
+    def test_change_password_happy_path_updates_hash(self):
+        with _client(self._ok_conn()) as (c, cursor):
+            r = c.post(
+                "/api/auth/change-password",
+                headers=self._headers(),
+                json={"current_password": self._current_password, "new_password": self._new_password},
+            )
+
+        assert r.status_code == 200
+        sql_calls = _sql_calls(cursor)
+        assert any("update users set password_hash" in sql for sql in sql_calls)
+        assert any("update password_reset_tokens set revoked_at = now()" in sql for sql in sql_calls)
+
+    def test_change_password_wrong_current_password_returns_401(self):
+        with _client(self._ok_conn()) as (c, _):
+            r = c.post(
+                "/api/auth/change-password",
+                headers=self._headers(),
+                json={"current_password": "WrongPass1!AB", "new_password": self._new_password},
+            )
+
+        assert r.status_code == 401
+        assert "current password" in r.json()["detail"].lower()
+
+    def test_change_password_rejects_same_password(self):
+        with _client(self._ok_conn()) as (c, _):
+            r = c.post(
+                "/api/auth/change-password",
+                headers=self._headers(),
+                json={"current_password": self._current_password, "new_password": self._current_password},
+            )
+
+        assert r.status_code == 400
+        assert "different" in r.json()["detail"].lower()
+
+    def test_change_password_oauth_only_account_returns_400(self):
+        conn = _make_conn(fetchone_by_sql={"select password_hash": (None,)})
+        with _client(conn) as (c, _):
+            r = c.post(
+                "/api/auth/change-password",
+                headers=self._headers(),
+                json={"current_password": self._current_password, "new_password": self._new_password},
+            )
+
+        assert r.status_code == 400
+
+    def test_change_password_requires_auth(self):
+        with _client() as (c, _):
+            r = c.post(
+                "/api/auth/change-password",
+                json={"current_password": self._current_password, "new_password": self._new_password},
+            )
+
+        assert r.status_code in (401, 403)
+
+
+# ===========================================================================
+# GET /api/auth/me
+# ===========================================================================
+
+class TestMe:
+    _user_id = _new_uuid()
+    _email = "carol@example.com"
+
+    def _headers(self):
+        return _make_bearer(self._user_id, self._email)
+
+    def _ok_conn(self):
+        return _make_conn(fetchone_side_effect=[(self._user_id, self._email, "Carol", "C1")])
+
+    def test_me_happy_path_returns_user(self):
+        with _client(self._ok_conn()) as (c, _):
+            r = c.get("/api/auth/me", headers=self._headers())
+        assert r.status_code == 200
+        assert r.json()["email"] == self._email
+        assert r.json()["id"] == self._user_id
+
+    def test_me_returns_display_name_and_english_level(self):
+        conn = _make_conn(fetchone_side_effect=[(self._user_id, self._email, "Carol Nguyen", "C1")])
+        with _client(conn) as (c, _):
+            r = c.get("/api/auth/me", headers=self._headers())
+        assert r.json()["display_name"] == "Carol Nguyen"
+        assert r.json()["english_level"] == "C1"
+
+    def test_me_no_token_returns_401(self):
+        """HTTPBearer raises 401/403 when the Authorization header is missing."""
+        with _client() as (c, _):
+            r = c.get("/api/auth/me")
+        assert r.status_code in (401, 403)
+
+    def test_me_invalid_token_returns_401(self):
+        with _client() as (c, _):
+            r = c.get("/api/auth/me", headers={"Authorization": "Bearer bad.token.value"})
+        assert r.status_code == 401
+
+    def test_me_user_not_found_in_db_returns_401(self):
+        conn = _make_conn(fetchone_side_effect=[None])
+        with _client(conn) as (c, _):
+            r = c.get("/api/auth/me", headers=self._headers())
+        assert r.status_code == 401
+
+
+# ===========================================================================
+# POST /api/chat/respond  (logged-in user)
+# ===========================================================================
+
+class TestChatRespond:
+    _user_id = _new_uuid()
+    _conv_id = _new_uuid()
+    _email = "dave@example.com"
+
+    def _headers(self):
+        return _make_bearer(self._user_id, self._email)
+
+    def _new_conv_conn(self):
+        return _make_conn(
+            fetchone_by_sql={
+                "from topics where code": None,
+                "insert into conversations": (self._conv_id,),
+                "max(turn_number)": (1,),
+            }
+        )
+
+    def test_chat_respond_text_happy_path(self):
+        with (
+            _client(self._new_conv_conn()) as (c, _),
+            patch("app.api.chat.run_langraph_agent", return_value=("Great job!", b"mp3data", None, [])),
+            patch("app.api.chat.store_user_audio", return_value=None),
+            patch("app.api.chat._upload"),
+        ):
+            r = c.post(
+                "/api/chat/respond",
+                data={"text": "Tell me about IELTS", "topic": "ielts1"},
+                headers=self._headers(),
+            )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["user_input"] == "Tell me about IELTS"
+        assert body["response_text"] == "Great job!"
+        assert body["conversation_id"] == self._conv_id
+
+    def test_chat_respond_audio_base64_is_correct(self):
+        fresh_conn = _make_conn(
+            fetchone_by_sql={
+                "insert into conversations": (self._conv_id,),
+                "max(turn_number)": (1,),
+            }
+        )
+        with (
+            patch("app.api.chat.run_langraph_agent", return_value=("Reply!", b"audiodata", None, [])),
+            patch("app.api.chat.store_user_audio", return_value=None),
+            patch("app.api.chat._upload"),
+        ):
+            with _client(fresh_conn) as (c, _):
+                r = c.post("/api/chat/respond", data={"text": "Hello"}, headers=self._headers())
+        assert r.status_code == 200, f"Unexpected {r.status_code}: {r.text}"
+        assert base64.b64decode(r.json()["audio_base64"]) == b"audiodata"
+
+    def test_chat_respond_audio_mode_calls_stt(self):
+        with (
+            _client(self._new_conv_conn()) as (c, _),
+            patch("app.api.chat.transcribe_audio", return_value="I said hello") as mock_stt,
+            patch("app.api.chat.run_langraph_agent", return_value=("Nice!", b"mp3", None, [])),
+            patch("app.api.chat.store_user_audio", return_value=("key", "audio/webm")),
+            patch("app.api.chat._upload"),
+        ):
+            r = c.post(
+                "/api/chat/respond",
+                data={"topic": "daily"},
+                files={"audio_file": ("rec.webm", io.BytesIO(_fake_webm_bytes()), "audio/webm")},
+                headers=self._headers(),
+            )
+        assert r.status_code == 200
+        mock_stt.assert_called_once()
+
+    def test_chat_respond_no_input_returns_400(self):
+        with _client() as (c, _):
+            r = c.post("/api/chat/respond", data={"text": "   "}, headers=self._headers())
+        assert r.status_code == 400
+
+    def test_chat_respond_no_auth_returns_401(self):
+        """HTTPBearer raises 401/403 when the Authorization header is missing."""
+        with _client() as (c, _):
+            r = c.post("/api/chat/respond", data={"text": "Hello"})
+        assert r.status_code in (401, 403)
+
+    def test_chat_respond_invalid_conversation_id_returns_400(self):
+        with _client() as (c, _):
+            r = c.post(
+                "/api/chat/respond",
+                data={"text": "Hello", "conversation_id": "not-a-uuid"},
+                headers=self._headers(),
+            )
+        assert r.status_code == 400
+
+    def test_chat_respond_audio_upload_too_large_returns_413(self):
+        big = b"x" * (25 * 1024 * 1024 + 1)
+        with _client() as (c, _):
+            r = c.post(
+                "/api/chat/respond",
+                data={"text": ""},
+                files={"audio_file": ("big.webm", io.BytesIO(big), "audio/webm")},
+                headers=self._headers(),
+            )
+        assert r.status_code == 413
+
+    def test_chat_respond_conversation_not_found_returns_404(self):
+        conn = _make_conn(fetchone_side_effect=[None])
+        with (
+            _client(conn) as (c, _),
+            patch("app.api.chat.run_langraph_agent", return_value=("reply", b"", None, [])),
+        ):
+            r = c.post(
+                "/api/chat/respond",
+                data={"text": "Hello", "conversation_id": _new_uuid()},
+                headers=self._headers(),
+            )
+        assert r.status_code == 404
+
+
+# ===========================================================================
+# POST /api/chat/respond — voice_accent forwarding
+# ===========================================================================
+
+class TestChatRespondVoiceAccent:
+    _user_id = _new_uuid()
+    _conv_id = _new_uuid()
+    _email = "grace@example.com"
+
+    def _headers(self):
+        return _make_bearer(self._user_id, self._email)
+
+    def _new_conv_conn(self):
+        return _make_conn(
+            fetchone_by_sql={
+                "from topics where code": None,
+                "insert into conversations": (self._conv_id,),
+                "max(turn_number)": (1,),
+            }
+        )
+
+    def test_voice_accent_is_forwarded_to_run_langraph_agent(self):
+        with (
+            _client(self._new_conv_conn()) as (c, _),
+            patch("app.api.chat.run_langraph_agent", return_value=("Good!", b"mp3data", None, [])) as mock_agent,
+            patch("app.api.chat.store_user_audio", return_value=None),
+            patch("app.api.chat._upload"),
+        ):
+            r = c.post(
+                "/api/chat/respond",
+                data={"text": "Hello", "voice_accent": "uk"},
+                headers=self._headers(),
+            )
+        assert r.status_code == 200
+        mock_agent.assert_called_once()
+        _, kwargs = mock_agent.call_args
+        assert kwargs["voice_accent"] == "uk"
+
+    def test_missing_voice_accent_passes_none_to_run_langraph_agent(self):
+        with (
+            _client(self._new_conv_conn()) as (c, _),
+            patch("app.api.chat.run_langraph_agent", return_value=("Good!", b"mp3data", None, [])) as mock_agent,
+            patch("app.api.chat.store_user_audio", return_value=None),
+            patch("app.api.chat._upload"),
+        ):
+            r = c.post(
+                "/api/chat/respond",
+                data={"text": "Hello"},
+                headers=self._headers(),
+            )
+        assert r.status_code == 200
+        mock_agent.assert_called_once()
+        _, kwargs = mock_agent.call_args
+        assert kwargs["voice_accent"] is None
+
+
+# ===========================================================================
+# GET /api/conversations
+# ===========================================================================
+
+class TestListConversations:
+    _user_id = _new_uuid()
+    _email = "eve@example.com"
+    _conv_id = _new_uuid()
+
+    def _headers(self):
+        return _make_bearer(self._user_id, self._email)
+
+    def test_list_conversations_happy_path(self):
+        now = datetime.now(timezone.utc)
+        conn = _make_conn(fetchall_value=[(self._conv_id, "IELTS Part 1", "active", now, None, None, None, None)])
+        with _client(conn) as (c, _):
+            r = c.get("/api/conversations", headers=self._headers())
+        assert r.status_code == 200
+        body = r.json()
+        assert len(body["conversations"]) == 1
+        assert body["conversations"][0]["id"] == self._conv_id
+
+    def test_list_conversations_empty_list(self):
+        conn = _make_conn(fetchall_value=[])
+        with _client(conn) as (c, _):
+            r = c.get("/api/conversations", headers=self._headers())
+        assert r.status_code == 200
+        assert r.json()["conversations"] == []
+
+    def test_list_conversations_no_auth_returns_401(self):
+        """HTTPBearer raises 401/403 when the Authorization header is missing."""
+        with _client() as (c, _):
+            r = c.get("/api/conversations")
+        assert r.status_code in (401, 403)
+
+    def test_list_conversations_invalid_token_returns_401(self):
+        with _client() as (c, _):
+            r = c.get("/api/conversations", headers={"Authorization": "Bearer invalid.token.here"})
+        assert r.status_code == 401
+
+
+# ===========================================================================
+# GET /api/conversations/{id}/messages-with-scores
+# ===========================================================================
+
+class TestGetConversationMessages:
+    _user_id = _new_uuid()
+    _email = "frank@example.com"
+    _conv_id = _new_uuid()
+    _msg_id = _new_uuid()
+
+    def _headers(self):
+        return _make_bearer(self._user_id, self._email)
+
+    def test_get_messages_happy_path(self):
+        now = datetime.now(timezone.utc)
+        conn = _make_conn(
+            fetchone_side_effect=[(self._conv_id,)],
+            fetchall_value=[
+                (self._msg_id, "user", "text", "Hello AI", now, None, None, None, None, None, None, None, None),
+                (_new_uuid(), "assistant", "text", "Hello human!", now, None, None, None, None, None, None, None, None),
+            ],
+        )
+        with _client(conn) as (c, _):
+            r = c.get(f"/api/conversations/{self._conv_id}/messages-with-scores", headers=self._headers())
+        assert r.status_code == 200
+        body = r.json()
+        assert body["conversation_id"] == self._conv_id
+        assert len(body["messages"]) == 2
+
+    def test_get_messages_audio_url_generated_when_storage_key_present(self):
+        now = datetime.now(timezone.utc)
+        conn = _make_conn(
+            fetchone_side_effect=[(self._conv_id,)],
+            fetchall_value=[(self._msg_id, "user", "audio", "transcript", now, "audio/key/path.mp3", None, None, None, None, None, None, None)],
+        )
+        with _client(conn) as (c, _):
+            r = c.get(f"/api/conversations/{self._conv_id}/messages-with-scores", headers=self._headers())
+        assert r.status_code == 200
+        assert r.json()["messages"][0]["audio_url"] == "/api/audio/audio/key/path.mp3"
+
+    def test_get_messages_no_audio_url_when_storage_key_is_null(self):
+        now = datetime.now(timezone.utc)
+        conn = _make_conn(
+            fetchone_side_effect=[(self._conv_id,)],
+            fetchall_value=[(self._msg_id, "assistant", "text", "Hello!", now, None, None, None, None, None, None, None, None)],
+        )
+        with _client(conn) as (c, _):
+            r = c.get(f"/api/conversations/{self._conv_id}/messages-with-scores", headers=self._headers())
+        assert r.status_code == 200
+        assert r.json()["messages"][0]["audio_url"] is None
+
+    def test_get_messages_assistant_audio_url_generated_when_storage_key_present(self):
+        now = datetime.now(timezone.utc)
+        conn = _make_conn(
+            fetchone_side_effect=[(self._conv_id,)],
+            fetchall_value=[(self._msg_id, "assistant", "text", "text", now, None, "assistant/key.mp3", None, None, None, None, None, None)],
+        )
+        with _client(conn) as (c, _):
+            r = c.get(f"/api/conversations/{self._conv_id}/messages-with-scores", headers=self._headers())
+        assert r.status_code == 200
+        assert r.json()["messages"][0]["assistant_audio_url"] == "/api/audio/assistant/key.mp3"
+
+    def test_get_messages_no_auth_returns_401(self):
+        """HTTPBearer raises 401/403 when the Authorization header is missing."""
+        with _client() as (c, _):
+            r = c.get(f"/api/conversations/{self._conv_id}/messages-with-scores")
+        assert r.status_code in (401, 403)
+
+    def test_get_messages_invalid_uuid_returns_400(self):
+        with _client() as (c, _):
+            r = c.get("/api/conversations/not-a-uuid/messages-with-scores", headers=self._headers())
+        assert r.status_code == 400
+
+    def test_get_messages_conversation_not_found_returns_404(self):
+        conn = _make_conn(fetchone_side_effect=[None])
+        with _client(conn) as (c, _):
+            r = c.get(f"/api/conversations/{self._conv_id}/messages-with-scores", headers=self._headers())
+        assert r.status_code == 404
+
+
+# ===========================================================================
+# Health check (smoke)
+# ===========================================================================
+
+class TestHealthCheck:
+    def test_health_check_returns_ok(self):
+        with _client() as (c, _):
+            r = c.get("/health")
+        assert r.status_code == 200
+        assert r.json() == {"status": "ok"}
+
+    def test_health_check_includes_security_headers(self):
+        with _client() as (c, _):
+            r = c.get("/health")
+        assert r.headers["X-Content-Type-Options"] == "nosniff"
+        assert r.headers["X-Frame-Options"] == "DENY"
+        # /health is not a sensitive endpoint; Cache-Control: no-store is only
+        # applied to /api/auth/ and /api/chat/ paths.
+        assert r.headers.get("cache-control") != "no-store"
+
+
+def test_read_and_close_upload_closes_temp_file():
+    from app.api._audio import _read_and_close_upload
+
+    upload_backing_file = tempfile.SpooledTemporaryFile()
+    upload_backing_file.write(_fake_webm_bytes())
+    upload_backing_file.seek(0)
+    upload = StarletteUploadFile(filename="rec.webm", file=upload_backing_file, headers={"content-type": "audio/webm"})
+
+    audio_bytes = _read_and_close_upload(upload)
+
+    assert audio_bytes == _fake_webm_bytes()
+    assert upload_backing_file.closed is True
+
+
+
+# ===========================================================================
+# POST /api/assess
+# ===========================================================================
+
+class TestAssessRoute:
+    """Tests for POST /api/assess — pronunciation assessment endpoint."""
+
+    def _headers(self, auth_headers):
+        headers, _ = auth_headers()
+        return headers
+
+    def _mock_result(self, mode: str = "unscripted", include_completeness: bool = False):
+        pron = {
+            "AccuracyScore": 95.0,
+            "FluencyScore": 90.0,
+            "PronScore": 91.5,
+            "ProsodyScore": 85.0,
+        }
+        if include_completeness:
+            pron["CompletenessScore"] = 100.0
+        return {
+            "mode": mode,
+            "display_text": "Hello.",
+            "PronunciationAssessment": pron,
+            "Words": [
+                {
+                    "Word": "hello",
+                    "PronunciationAssessment": {"AccuracyScore": 95.0, "ErrorType": "None"},
+                    "Syllables": [],
+                    "Phonemes": [],
+                }
+            ],
+        }
+
+    def test_requires_auth(self, client):
+        resp = client.post(
+            "/api/assess",
+            files={"audio_file": ("test.wav", _fake_wav_bytes(), "audio/wav")},
+        )
+        assert resp.status_code in (401, 403)
+
+    def test_missing_audio_file_returns_422(self, client, auth_headers):
+        resp = client.post("/api/assess", headers=self._headers(auth_headers))
+        assert resp.status_code == 422
+
+    def test_empty_audio_returns_400(self, client, auth_headers):
+        resp = client.post(
+            "/api/assess",
+            headers=self._headers(auth_headers),
+            files={"audio_file": ("test.wav", b"", "audio/wav")},
+        )
+        assert resp.status_code == 400
+
+    def test_oversized_audio_returns_413(self, client, auth_headers):
+        oversized = b"x" * (25 * 1024 * 1024 + 1)
+        resp = client.post(
+            "/api/assess",
+            headers=self._headers(auth_headers),
+            files={"audio_file": ("big.wav", oversized, "audio/wav")},
+        )
+        assert resp.status_code == 413
+
+    def test_unscripted_assess_returns_200(self, client, auth_headers):
+        with patch("app.api.assess.get_assessment_service") as mock_get:
+            mock_get.return_value.assess.return_value = self._mock_result("unscripted")
+            resp = client.post(
+                "/api/assess",
+                headers=self._headers(auth_headers),
+                files={"audio_file": ("test.wav", _fake_wav_bytes(), "audio/wav")},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["mode"] == "unscripted"
+        assert data["pron_score"] == 91.5
+        assert data["accuracy_score"] == 95.0
+        assert data["fluency_score"] == 90.0
+        assert data["completeness_score"] is None
+        assert data["prosody_score"] == 85.0
+        assert len(data["words"]) == 1
+        assert data["words"][0]["word"] == "hello"
+
+    def test_scripted_assess_returns_completeness_score(self, client, auth_headers):
+        with patch("app.api.assess.get_assessment_service") as mock_get:
+            mock_get.return_value.assess.return_value = self._mock_result(
+                "scripted", include_completeness=True
+            )
+            resp = client.post(
+                "/api/assess",
+                headers=self._headers(auth_headers),
+                data={"reference_text": "Hello"},
+                files={"audio_file": ("test.wav", _fake_wav_bytes(), "audio/wav")},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["mode"] == "scripted"
+        assert data["completeness_score"] == 100.0
+
+    def test_assess_passes_reference_text_to_service(self, client, auth_headers):
+        with patch("app.api.assess.get_assessment_service") as mock_get:
+            mock_get.return_value.assess.return_value = self._mock_result("scripted", include_completeness=True)
+            client.post(
+                "/api/assess",
+                headers=self._headers(auth_headers),
+                data={"reference_text": "Good morning"},
+                files={"audio_file": ("test.wav", _fake_wav_bytes(), "audio/wav")},
+            )
+        call_kwargs = mock_get.return_value.assess.call_args
+        assert call_kwargs.kwargs["reference_text"] == "Good morning"
+
+    def test_assess_passes_language_override_to_service(self, client, auth_headers):
+        with patch("app.api.assess.get_assessment_service") as mock_get:
+            mock_get.return_value.assess.return_value = self._mock_result()
+            client.post(
+                "/api/assess",
+                headers=self._headers(auth_headers),
+                data={"language": "en-GB"},
+                files={"audio_file": ("test.wav", _fake_wav_bytes(), "audio/wav")},
+            )
+        call_kwargs = mock_get.return_value.assess.call_args
+        assert call_kwargs.kwargs["language"] == "en-GB"
+
+    def test_azure_runtime_error_returns_502(self, client, auth_headers):
+        with patch("app.api.assess.get_assessment_service") as mock_get:
+            mock_get.return_value.assess.side_effect = RuntimeError("Speech not recognized.")
+            resp = client.post(
+                "/api/assess",
+                headers=self._headers(auth_headers),
+                files={"audio_file": ("test.wav", _fake_wav_bytes(), "audio/wav")},
+            )
+        assert resp.status_code == 502
+        assert "Speech not recognized" in resp.json()["detail"]
+
+    def test_unknown_error_type_returns_502(self, client, auth_headers):
+        mock_result = {
+            "mode": "unscripted",
+            "display_text": "Hello.",
+            "PronunciationAssessment": {"AccuracyScore": 95.0, "FluencyScore": 90.0, "PronScore": 91.5},
+            "Words": [
+                {
+                    "Word": "hello",
+                    "PronunciationAssessment": {"AccuracyScore": 95.0, "ErrorType": "FutureUnknownType"},
+                    "Syllables": [],
+                    "Phonemes": [],
+                }
+            ],
+        }
+        with patch("app.api.assess.get_assessment_service") as mock_get:
+            mock_get.return_value.assess.return_value = mock_result
+            resp = client.post(
+                "/api/assess",
+                headers=self._headers(auth_headers),
+                files={"audio_file": ("test.wav", _fake_wav_bytes(), "audio/wav")},
+            )
+        assert resp.status_code == 502
+
+    def test_assess_invalid_language_returns_400(self, client, auth_headers):
+        resp = client.post(
+            "/api/assess",
+            headers=self._headers(auth_headers),
+            data={"language": "fr-FR"},
+            files={"audio_file": ("test.wav", _fake_wav_bytes(), "audio/wav")},
+        )
+        assert resp.status_code == 400
+
+    def test_assess_rejects_mismatched_audio_signature(self, client, auth_headers):
+        resp = client.post(
+            "/api/assess",
+            headers=self._headers(auth_headers),
+            files={"audio_file": ("test.wav", b"not-a-real-wav", "audio/wav")},
+        )
+        assert resp.status_code == 415

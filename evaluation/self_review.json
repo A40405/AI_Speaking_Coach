@@ -1,0 +1,30 @@
+{
+  "duplicates_checked": true,
+  "weak_cases_removed": [
+    "clean textbook-only grammar items",
+    "overly similar direct injection repeats",
+    "too many single-error minimal pairs without conversational context"
+  ],
+  "realism_improvements_applied": [
+    "Added fillers, self-repairs, typos, and clipped spoken phrasing",
+    "Added Vietnamese and non-Vietnamese code-switching",
+    "Added emotional states and confidence-sensitive wording",
+    "Added adversarial camouflage where harmful intent is hidden inside grammar or business requests",
+    "Added parser-looking noise, XML, JSON fragments, and unicode corruption",
+    "Added multiple cases that mix legitimate tutoring needs with unsafe or manipulative side requests"
+  ],
+  "remaining_limitations": [
+    "The schema is single-turn focused, so some truly multi-turn failures are compressed into one turn description",
+    "Audio artifacts are represented as text transcripts rather than real waveform inputs",
+    "Tool-use cases are included, but they do not assert exact tool outputs because this artifact set is tutor-message oriented",
+    "Some crisis and abuse cases require regional escalation resources that are not embedded per locale"
+  ],
+  "adversarial_coverage_strength": "strong",
+  "recommended_future_expansions": [
+    "Real recorded ASR corpora",
+    "Regional dialect pronunciation targets",
+    "Children's voices and classroom use",
+    "Cross-session personalization drift",
+    "Long multi-turn memory regression sets"
+  ]
+}

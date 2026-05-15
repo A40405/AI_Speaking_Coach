@@ -1,0 +1,53 @@
+# Environment
+.env
+.env.production
+.git-rewrite/
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+build/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Node
+node_modules/
+dist/
+frontend/vite.config.ts.timestamp-*.mjs
+
+# OS
+.DS_Store
+
+# AI logs — tracked structure, ignored content
+.ai-log/*.jsonl
+# Environment
+.env
+.env.prod
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+build/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.claude
+# OS
+.DS_Store
+
+# AI logs — tracked structure, ignored content
+.ai-log/*.jsonl
+data/
+uv.lock
+IMAGES
+logs/
+.worktrees/
+
+# Prompt ConfigMap — managed out-of-band, not committed to git
+deployments/backend/prompts-configmap.yaml
