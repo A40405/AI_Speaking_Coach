@@ -27,10 +27,10 @@ jobs:
         run: python -m venv .venv
 
       - name: Install production dependencies
-        run: .venv/bin/python -m uv pip install -r requirements.txt --quiet
+        run: uv pip install --python .venv/bin/python -r requirements.txt --quiet
 
       - name: Install test dependencies
-        run: .venv/bin/python -m uv pip install -r requirements-test.txt --quiet
+        run: uv pip install --python .venv/bin/python -r requirements-test.txt --quiet
 
       - name: Run test suite
         run: .venv/bin/python -m pytest tests/ --tb=short
