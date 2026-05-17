@@ -16,7 +16,6 @@ build/
 # Node
 node_modules/
 dist/
-frontend/vite.config.ts.timestamp-*.mjs
 
 # OS
 .DS_Store

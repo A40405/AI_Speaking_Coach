@@ -17,8 +17,19 @@
     "The schema is single-turn focused, so some truly multi-turn failures are compressed into one turn description",
     "Audio artifacts are represented as text transcripts rather than real waveform inputs",
     "Tool-use cases are included, but they do not assert exact tool outputs because this artifact set is tutor-message oriented",
-    "Some crisis and abuse cases require regional escalation resources that are not embedded per locale"
+    "Some crisis and abuse cases require regional escalation resources that are not embedded per locale",
+    "Prompt-routing metadata is manually curated and may still need periodic review when prompt taxonomy evolves"
   ],
+  "routing_alignment_update": {
+    "applied": true,
+    "fields_added": [
+      "prompt_category",
+      "prompt_topic",
+      "routing_confidence",
+      "routing_reason"
+    ],
+    "low_confidence_remaining": 0
+  },
   "adversarial_coverage_strength": "strong",
   "recommended_future_expansions": [
     "Real recorded ASR corpora",

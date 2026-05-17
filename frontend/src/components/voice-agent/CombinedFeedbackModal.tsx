@@ -3,7 +3,6 @@ import { useEffect, useState } from 'react';
 import { useT } from '../../i18n/useLanguage';
 import { PHONEME_TIPS, type Mistake } from './MessageBubble';
 import PhonemeTip from './PhonemeTip';
-import InteractiveSentence from './InteractiveSentence';
 
 type FeedbackMode = 'pronunciation' | 'grammar';
 
@@ -162,9 +161,9 @@ export default function CombinedFeedbackModal({
               <div className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-300 uppercase tracking-wider mb-1">
                 {t('va.modal.targetSentence')}
               </div>
-              <div className="text-xs text-emerald-800 dark:text-emerald-200 leading-relaxed">
-                <InteractiveSentence text={grammarCorrectedSentence} inline />
-              </div>
+              <p className="text-xs text-emerald-800 dark:text-emerald-200 leading-relaxed">
+                {grammarCorrectedSentence}
+              </p>
             </div>
           )}
 

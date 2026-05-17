@@ -12,4 +12,3 @@ export type { SessionSummary } from './SessionSummaryModal';
 export { default as VoiceRecorderComponent } from './VoiceRecorderComponent';
 export { default as ConversationSidebar } from './ConversationSidebar';
 export { AgentWaveform, MicWaveform } from './Waveforms';
-export { default as ChatMessage } from './ChatMessage';

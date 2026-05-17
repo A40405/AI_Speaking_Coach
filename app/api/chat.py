@@ -51,6 +51,37 @@ _GUARDRAIL_HTTP_STATUS: dict[str, int] = {
     "TOPIC_BLOCKED": status.HTTP_400_BAD_REQUEST,
 }
 
+_DEGRADED_FALLBACK_PATTERNS = (
+    "i'm a bit overwhelmed right now",
+    "i am a bit overwhelmed right now",
+)
+
+
+def _degraded_coaching_reply(user_input: str) -> tuple[str, list[str]]:
+    text = (user_input or "").strip()
+    if not text:
+        return (
+            "No worries. Send one short sentence in English, and I will help you improve it.",
+            ["I went to school yesterday.", "I feel nervous when I speak English."],
+        )
+
+    corrected = text
+    corrected = corrected.replace(" i goed ", " i went ")
+    corrected = corrected.replace(" i goed", " i went")
+    corrected = corrected.replace("dont ", "don't ")
+    corrected = corrected.replace("cant ", "can't ")
+
+    if corrected != text:
+        return (
+            f"Good effort. A more natural sentence is: \"{corrected}\". Want to try one more?",
+            ["Can you correct this sentence?", "How can I say this more naturally?"],
+        )
+
+    return (
+        "Thanks for sharing. Add one more detail, and I will help you make it sound natural and confident.",
+        ["Can you give me one follow-up question?", "How can I improve this sentence?"],
+    )
+
 
 def _fetch_visible_history(cur, conv_id: str, limit: int = 20) -> list[dict]:
     """
@@ -62,20 +93,20 @@ def _fetch_visible_history(cur, conv_id: str, limit: int = 20) -> list[dict]:
         return []
     cur.execute(
         """
-        SELECT m.role, m.text_content
+        SELECT m.role, m.text_content, m.raw_content
         FROM messages m
         JOIN conversations c ON c.id = m.conversation_id
         WHERE m.conversation_id = %s
           AND m.role IN ('user', 'assistant')
           AND m.text_content IS NOT NULL
           AND (c.cleared_at IS NULL OR m.created_at > c.cleared_at)
-        ORDER BY m.created_at DESC
+        ORDER BY m.created_at DESC, m.role ASC
         LIMIT %s
         """,
         (conv_id, limit),
     )
     rows = cur.fetchall()
-    return [{"role": row[0], "content": row[1]} for row in reversed(rows)]
+    return [{"role": row[0], "content": row[1], "raw_content": row[2]} for row in reversed(rows)]
 
 
 def _insert_audio_asset(
@@ -311,11 +342,14 @@ def chat_respond(
             logger.exception("MinIO upload failed for user audio message_id=%s", user_message_id)
 
     # Convert DB history (list[dict]) to the "Role: text" string format the pipeline expects.
+    # For assistant turns, prefer raw_content (full XML) over text_content so the model sees
+    # its prior format and continues to use XML tags — avoids few-shot format contamination.
     # category and topic are passed directly to run_langraph_agent() for typed prompt routing.
     history_lines: list[str] = []
     for msg in conversation_history:
         role_label = "User" if msg["role"] == "user" else "Assistant"
-        history_lines.append(f"{role_label}: {msg['content']}")
+        content = msg.get("raw_content") or msg["content"]
+        history_lines.append(f"{role_label}: {content}")
 
     set_msg_id(assistant_message_id)
     logger.info(
@@ -323,7 +357,7 @@ def chat_respond(
         len(user_input),
         len(history_lines),
     )
-    response_text, response_audio_bytes, grammar_raw, tool_steps = run_langraph_agent(
+    response_text, response_audio_bytes, grammar_raw, tool_steps, suggestions, raw_output = run_langraph_agent(
         user_input=user_input,
         history=history_lines,
         voice_gender=voice_gender,
@@ -332,6 +366,18 @@ def chat_respond(
         topic=topic,
         user_id=user_id,
     )
+    lower_response = (response_text or "").strip().lower()
+    if any(pattern in lower_response for pattern in _DEGRADED_FALLBACK_PATTERNS):
+        logger.warning("Replacing degraded fallback response with local coaching fallback")
+        response_text, suggestions = _degraded_coaching_reply(user_input)
+        grammar_raw = None
+        tool_steps = []
+        response_audio_bytes = _synthesize_audio_bytes(
+            response_text,
+            voice_gender=voice_gender,
+            voice_accent=voice_accent,
+        )
+        raw_output = response_text
     grammar_data = parse_annotated_grammar(grammar_raw, user_input)
 
     # ── Guardrails: Output ─────────────────────────────────────────────────
@@ -340,6 +386,17 @@ def chat_respond(
         response_audio_bytes = _synthesize_audio_bytes(output_result.text, voice_gender=voice_gender, voice_accent=voice_accent)
     response_text = output_result.text
     _all_flags.extend(output_result.flags)
+
+    redacted_suggestions: list[str] = []
+    for suggestion in suggestions:
+        suggestion_result = _output_guardrails.check(suggestion)
+        redacted_text = suggestion_result.text
+        if suggestion.endswith((".", "!", "?")) and not redacted_text.endswith(suggestion[-1]):
+            redacted_text = f"{redacted_text}{suggestion[-1]}"
+        redacted_suggestions.append(redacted_text)
+        _all_flags.extend(suggestion_result.flags)
+    suggestions = redacted_suggestions
+
     _guardrail_decisions["output_pii_redacted"] = "contains_pii" in _all_flags
     # ── End Output Guardrails ──────────────────────────────────────────────
 
@@ -379,10 +436,10 @@ def chat_respond(
             )
             cur.execute(
                 """
-                INSERT INTO messages (id, conversation_id, turn_id, role, input_mode, text_content)
-                VALUES (%s, %s, %s, 'assistant', 'text', %s)
+                INSERT INTO messages (id, conversation_id, turn_id, role, input_mode, text_content, raw_content, suggestions)
+                VALUES (%s, %s, %s, 'assistant', 'text', %s, %s, %s::jsonb)
                 """,
-                (assistant_message_id, conv_id, turn_id, response_text),
+                (assistant_message_id, conv_id, turn_id, response_text, raw_output, _json.dumps(suggestions)),
             )
             cur.execute("UPDATE conversations SET updated_at = NOW() WHERE id = %s", (conv_id,))
 
@@ -510,4 +567,5 @@ def chat_respond(
         grammar_summary=grammar_summary,
         grammar_detail=grammar_detail,
         tool_steps=tool_steps,
+        suggestions=suggestions,
     )

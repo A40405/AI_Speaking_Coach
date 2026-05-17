@@ -3,7 +3,6 @@ import { useState } from 'react';
 import { useT } from '../../i18n/useLanguage';
 import { type Message, type Mistake } from './MessageBubble';
 import CombinedFeedbackModal from './CombinedFeedbackModal';
-import InteractiveSentence from './InteractiveSentence';
 
 interface AiFeedbackPanelProps {
   displayMsg: Message | null;
@@ -79,9 +78,9 @@ export default function AiFeedbackPanel({
                   </button>
                 )}
               </div>
-              <div className="text-[11px] text-gray-800 italic leading-snug">
-                <InteractiveSentence text={displayMsg.text} inline />
-              </div>
+              <p className="text-[11px] text-gray-800 italic leading-snug">
+                &ldquo;{displayMsg.text}&rdquo;
+              </p>
 
               {displayMsg.assessmentStatus === 'pending' && (
                 <div className="rounded-md border border-yellow-200 bg-yellow-50 p-2 flex items-center gap-2 mt-2 animate-fadeIn">
@@ -226,11 +225,6 @@ export default function AiFeedbackPanel({
                   </div>
                 ) : null}
               </div>
-            </div>
-
-            {/* Dedicated Word Exploration Card */}
-            <div className="mt-4 animate-fadeIn">
-              <InteractiveSentence text={displayMsg.text} isAgent={false} />
             </div>
           </>
         ) : (

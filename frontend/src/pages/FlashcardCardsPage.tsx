@@ -213,7 +213,9 @@ export default function FlashcardCardsPage() {
             <Layers className="h-8 w-8 text-muted-foreground/40" />
           </div>
           <div className="text-center">
-            <h3 className="font-semibold text-lg">{isVi ? 'Chưa có thẻ nào' : 'No cards found'}</h3>
+            <h3 className="font-semibold text-lg">
+              {isVi ? 'Chưa có thẻ nào' : 'No cards found'}
+            </h3>
             <p className="text-sm text-muted-foreground">
               {isVi
                 ? 'Hãy thêm thẻ đầu tiên để bắt đầu học tập.'
@@ -235,7 +237,7 @@ export default function FlashcardCardsPage() {
 
       <Dialog open={!!zoomedImage} onOpenChange={(open) => !open && setZoomedImage(null)}>
         <DialogContent className="max-w-none w-screen h-screen p-0 bg-black/90 border-none flex items-center justify-center z-[1000]">
-          <div
+          <div 
             className="w-full h-full flex items-center justify-center p-4 md:p-12 cursor-zoom-out relative"
             onClick={() => setZoomedImage(null)}
           >
@@ -294,8 +296,7 @@ function CardFormDialog({
 }) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen !== undefined ? controlledOpen : uncontrolledOpen;
-  const setOpen =
-    controlledOnOpenChange !== undefined ? controlledOnOpenChange : setUncontrolledOpen;
+  const setOpen = controlledOnOpenChange !== undefined ? controlledOnOpenChange : setUncontrolledOpen;
   const [frontText, setFrontText] = useState(card?.front_text || '');
   const [backText, setBackText] = useState(card?.back_text || '');
   const [tags, setTags] = useState(card?.tags?.join(', ') || '');
@@ -429,7 +430,9 @@ function CardFormDialog({
     >
       <Edit className="mr-2 h-4 w-4" /> {isVi ? 'Sửa thẻ' : 'Edit Card'}
     </DropdownMenuItem>
-  ) : controlledOpen !== undefined ? null : (
+  ) : controlledOpen !== undefined ? (
+    null
+  ) : (
     <Button className="gap-2 transition-all hover:scale-105 active:scale-95 shadow-sm">
       <Plus className="h-4 w-4" /> {isVi ? 'Thêm thẻ' : 'Add Card'}
     </Button>
@@ -573,8 +576,7 @@ function DeleteCardDialog({
 }) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen !== undefined ? controlledOpen : uncontrolledOpen;
-  const setOpen =
-    controlledOnOpenChange !== undefined ? controlledOnOpenChange : setUncontrolledOpen;
+  const setOpen = controlledOnOpenChange !== undefined ? controlledOnOpenChange : setUncontrolledOpen;
   const { toast } = useToast();
   const deleteMut = useDeleteCard();
   return (
@@ -781,19 +783,12 @@ function MediaManagerSection({
                   className="relative group w-16 h-16 rounded-lg overflow-hidden border shadow-sm cursor-pointer animate-in fade-in duration-300"
                   onClick={() => onPreview?.(url)}
                 >
-                  <img
-                    src={url}
-                    alt=""
-                    className="w-full h-full object-cover hover:opacity-90 transition-opacity"
-                  />
+                  <img src={url} alt="" className="w-full h-full object-cover hover:opacity-90 transition-opacity" />
                   <Button
                     variant="ghost"
                     size="icon"
                     className="absolute top-0.5 right-0.5 h-5 w-5 opacity-0 group-hover:opacity-100 bg-black/60 hover:bg-black/80 rounded-full transition-opacity"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDeleteExisting(m.id);
-                    }}
+                    onClick={(e) => { e.stopPropagation(); onDeleteExisting(m.id); }}
                   >
                     <X className="h-3 w-3 text-white" />
                   </Button>
@@ -814,10 +809,7 @@ function MediaManagerSection({
                   variant="ghost"
                   size="icon"
                   className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive/10"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onDeleteExisting(m.id);
-                  }}
+                  onClick={(e) => { e.stopPropagation(); onDeleteExisting(m.id); }}
                 >
                   <X className="h-3 w-3 text-destructive" />
                 </Button>
@@ -838,20 +830,13 @@ function MediaManagerSection({
                 className="relative group w-16 h-16 rounded-lg overflow-hidden border border-primary/30 shadow-sm cursor-pointer animate-in zoom-in-95 duration-300"
                 onClick={() => onPreview?.(url)}
               >
-                <img
-                  src={url}
-                  alt={file.name}
-                  className="w-full h-full object-cover hover:opacity-90 transition-opacity"
-                />
+                <img src={url} alt={file.name} className="w-full h-full object-cover hover:opacity-90 transition-opacity" />
                 <div className="absolute inset-0 bg-primary/10 opacity-0 group-hover:opacity-100 transition-opacity" />
                 <Button
                   variant="ghost"
                   size="icon"
                   className="absolute top-0.5 right-0.5 h-5 w-5 opacity-0 group-hover:opacity-100 bg-black/60 hover:bg-black/80 rounded-full transition-opacity"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onRemovePending(idx);
-                  }}
+                  onClick={(e) => { e.stopPropagation(); onRemovePending(idx); }}
                 >
                   <X className="h-3 w-3 text-white" />
                 </Button>
@@ -873,10 +858,7 @@ function MediaManagerSection({
                 variant="ghost"
                 size="icon"
                 className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive/10"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onRemovePending(idx);
-                }}
+                onClick={(e) => { e.stopPropagation(); onRemovePending(idx); }}
               >
                 <X className="h-3 w-3 text-destructive" />
               </Button>

@@ -139,11 +139,11 @@ async function createAudioFrameBridge(
           });
         },
       };
-    } catch (_err) {
+    } catch (err) {
       if (shouldAbort() || (ctx.state as string) === 'closed') {
         return noOpBridge;
       }
-      // console.warn('[VAD] AudioWorklet unavailable — falling back to ScriptProcessor', _err);
+      // console.warn('[VAD] AudioWorklet unavailable — falling back to ScriptProcessor', err);
     }
   }
 
@@ -272,6 +272,7 @@ export default function useVoiceActivity(
     lastLoggedStateRef.current = 'calibrating';
     debugRef.current = DEFAULT_VAD_DEBUG;
     setInternalSpeaking(false);
+    let frameCount = 0;
 
     const teardown = () => {
       teardownProcessor?.();
@@ -398,8 +399,8 @@ export default function useVoiceActivity(
           processor: bridge.processor,
         };
         teardownProcessor = bridge.cleanup;
-      } catch (_err) {
-        // console.error('[VAD] Failed to initialize voice activity detector', _err);
+      } catch (err) {
+        // console.error('[VAD] Failed to initialize voice activity detector', err);
         teardown();
       }
     })();

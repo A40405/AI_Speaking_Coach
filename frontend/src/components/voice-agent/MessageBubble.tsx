@@ -1,10 +1,7 @@
-import { Bot, Languages, Loader2, Mic, Play, User, Check, Copy } from 'lucide-react';
-import { useState, useRef, useEffect, useCallback } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { Bot, Mic, Play, User } from 'lucide-react';
 import { useT } from '../../i18n/useLanguage';
 import ReasoningSteps from './ReasoningSteps';
 import type { ToolCallStep } from '../../api/chat';
-
 export type { ToolCallStep };
 
 export interface Mistake {
@@ -41,6 +38,7 @@ export interface Message {
   assessmentNote?: string;
   toolSteps?: ToolCallStep[];
   grammarChecked?: boolean;
+  suggestions?: string[];
 }
 
 const PHONEME_TIPS_BASE: Record<string, string> = {
@@ -162,6 +160,7 @@ interface MessageBubbleProps {
   expandable?: boolean;
   expanded?: boolean;
   onToggleExpanded?: () => void;
+  onSuggestionClick?: (text: string) => void;
 }
 
 function TypingIndicator() {
@@ -200,144 +199,29 @@ function ScoreBadge({ score }: { score: number }) {
   );
 }
 
+function ReplayButton({ onClick }: { onClick: () => void }) {
+  const t = useT();
+  return (
+    <button
+      onClick={onClick}
+      title={t('bubble.replay.title')}
+      className="inline-flex items-center justify-center w-4.5 h-4.5 rounded-full border border-black/15 bg-black/4 text-black/35 dark:border-white/25 dark:bg-white/10 dark:text-white/70 cursor-pointer shrink-0 p-0 transition-all duration-150 hover:bg-blue-400/20 hover:text-blue-500 hover:border-blue-400/35 dark:hover:bg-blue-400/25 dark:hover:text-blue-300 dark:hover:border-blue-400/50"
+    >
+      <Play className="w-2 h-2 fill-current" />
+    </button>
+  );
+}
+
 export default function MessageBubble({
   message,
   onReplay,
   expandable,
   expanded,
   onToggleExpanded,
+  onSuggestionClick,
 }: MessageBubbleProps) {
   const t = useT();
   const isAgent = message.role === 'agent';
-  const [showTranslation, setShowTranslation] = useState(false);
-  const [translatedText, setTranslatedText] = useState<string | null>(null);
-  const [isTranslating, setIsTranslating] = useState(false);
-  const [showActions, setShowActions] = useState(false);
-  const [isCopied, setIsCopied] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  // Click outside to close toolbar on mobile
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-        setShowActions(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  const handleCopy = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      navigator.clipboard.writeText(message.text);
-      setIsCopied(true);
-      setTimeout(() => setIsCopied(false), 2000);
-    },
-    [message.text],
-  );
-
-  const handleTranslate = async (e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
-    if (showTranslation) {
-      setShowTranslation(false);
-      return;
-    }
-
-    if (translatedText) {
-      setShowTranslation(true);
-      return;
-    }
-
-    setIsTranslating(true);
-    try {
-      const API_KEY = import.meta.env.VITE_GG_TRANSLATE_API || 'YOUR_API_KEY_HERE';
-
-      const response = await fetch(
-        `https://translation.googleapis.com/language/translate/v2?key=${API_KEY}`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            q: message.text,
-            target: 'vi',
-          }),
-          headers: {
-            'Content-Type': 'application/json',
-          },
-        },
-      );
-
-      const data = await response.json();
-      if (data.data?.translations?.[0]?.translatedText) {
-        setTranslatedText(data.data.translations[0].translatedText);
-        setShowTranslation(true);
-      } else {
-        throw new Error(data.error?.message || 'Translation failed');
-      }
-    } catch (error) {
-      console.error('Translation failed:', error);
-    } finally {
-      setIsTranslating(false);
-    }
-  };
-
-  const renderContent = () => {
-    if (message.typing) return <TypingIndicator />;
-    if (!message.text && !isAgent && message.userAudioUrl) {
-      return (
-        <span className="flex items-center gap-1.5 text-gray-400 text-xs">
-          <Mic className="w-3 h-3 animate-pulse" />
-          <span>Sending</span>
-          <span className="flex items-center gap-0.5">
-            {[0, 150, 300].map((delay) => (
-              <span
-                key={delay}
-                className="w-1 h-1 rounded-full bg-gray-400 inline-block"
-                style={{ animation: `dotPulse 1.2s ease-in-out ${delay}ms infinite` }}
-              />
-            ))}
-          </span>
-        </span>
-      );
-    }
-    if (!message.text) return null;
-
-    const mistakes = message.mistakes || [];
-    const pronunciationMistakes = mistakes.filter((m) => m.type === 'Pronunciation');
-    const grammarMistakes = mistakes.filter((m) => m.type === 'Grammar');
-
-    const words = message.text.split(/(\s+)/);
-    return words.map((segment, idx) => {
-      const cleanWord = segment
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z-]/g, '');
-      if (!cleanWord) return <span key={idx}>{segment}</span>;
-
-      const pMistake = pronunciationMistakes.find(
-        (m) => m.wrong.toLowerCase().replace(/[^a-z-]/g, '') === cleanWord,
-      );
-
-      const gMistake = grammarMistakes.find(
-        (m) => m.wrong.toLowerCase().replace(/[^a-z-]/g, '') === cleanWord,
-      );
-
-      let className = 'transition-colors duration-150';
-      if (pMistake) {
-        className +=
-          ' text-red-600 font-medium underline decoration-red-300 decoration-2 underline-offset-2';
-      } else if (gMistake) {
-        className += ' text-orange-600 border-b-2 border-orange-200 border-dotted';
-      }
-
-      return (
-        <span key={idx} className={className}>
-          {segment}
-        </span>
-      );
-    });
-  };
-
   const tsDate =
     message.timestamp instanceof Date
       ? message.timestamp
@@ -350,11 +234,8 @@ export default function MessageBubble({
 
   return (
     <div
-      ref={containerRef}
-      className={`flex gap-2.5 ${isAgent ? 'flex-row' : 'flex-row-reverse'} items-end relative`}
+      className={`flex gap-2.5 ${isAgent ? 'flex-row' : 'flex-row-reverse'} items-end`}
       style={{ animation: 'fadeSlideIn 0.3s ease-out' }}
-      onMouseEnter={() => !message.typing && setShowActions(true)}
-      onMouseLeave={() => setShowActions(false)}
     >
       <div
         className={`w-7 h-7 rounded-full shrink-0 flex items-center justify-center mb-0.5 ${
@@ -376,7 +257,7 @@ export default function MessageBubble({
             {isAgent ? t('common.agent') : t('common.you')}
           </span>
           <span className="text-[10px] text-gray-400">{timeStr}</span>
-
+          {!message.typing && onReplay && <ReplayButton onClick={onReplay} />}
           {!message.typing &&
             !isAgent &&
             (message.score !== undefined || message.scoreDetails?.overall !== undefined) && (
@@ -384,129 +265,64 @@ export default function MessageBubble({
             )}
         </div>
 
-        <div
-          className={`flex items-center gap-2 ${isAgent ? 'flex-row' : 'flex-row-reverse'} w-full relative`}
+        <button
+          type="button"
+          onClick={canSelect ? onToggleExpanded : undefined}
+          disabled={!canSelect}
+          aria-pressed={canSelect ? Boolean(expanded) : undefined}
+          title={canSelect ? (expanded ? t('bubble.deselect') : t('bubble.select')) : undefined}
+          className={`text-left px-3 py-2 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap relative transition-all ${
+            isAgent
+              ? 'bg-blue-50 border border-blue-300 text-gray-900 rounded-tl-sm cursor-default'
+              : `bg-violet-50 border text-gray-900 rounded-tr-sm ${
+                  canSelect
+                    ? expanded
+                      ? 'border-violet-500 ring-2 ring-violet-300/50 bg-violet-100 cursor-pointer'
+                      : 'border-violet-300 hover:border-violet-400 hover:bg-violet-100/70 cursor-pointer'
+                    : 'border-violet-300 cursor-default'
+                }`
+          }`}
         >
-          <button
-            type="button"
-            onClick={() => {
-              if (message.typing) return;
-              if (canSelect) {
-                onToggleExpanded?.();
-              }
-              setShowActions(!showActions);
-            }}
-            disabled={message.typing}
-            className={`text-left px-3 py-2 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap relative transition-all flex-1 ${
-              isAgent
-                ? 'bg-blue-50 border border-blue-300 text-gray-900 rounded-tl-sm dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100 cursor-default'
-                : `bg-violet-50 border text-gray-900 rounded-tr-sm dark:bg-violet-900/20 dark:text-gray-100 ${
-                    canSelect
-                      ? expanded
-                        ? 'border-violet-500 ring-2 ring-violet-300/50 bg-violet-100 dark:bg-violet-900/40 cursor-pointer'
-                        : 'border-violet-300 hover:border-violet-400 hover:bg-violet-100/70 dark:border-violet-700 dark:hover:bg-violet-900/30 cursor-pointer'
-                      : 'border-violet-300 dark:border-violet-700 cursor-default'
-                  }`
-            } ${showActions ? 'ring-2 ring-blue-400 dark:ring-blue-500 ring-opacity-50' : ''}`}
-          >
-            {renderContent()}
-
-            <AnimatePresence>
-              {showTranslation && translatedText && (
-                <motion.div
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: 'auto', opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  transition={{ duration: 0.2 }}
-                  className={`mt-2 pt-2 border-t text-xs italic overflow-hidden ${isAgent ? 'border-blue-200 text-blue-800' : 'border-violet-200 text-violet-800'}`}
-                >
-                  <div className="flex items-center gap-1 mb-1 opacity-70 not-italic font-semibold uppercase tracking-wider text-[9px]">
-                    <Languages className="w-2.5 h-2.5" />
-                    <span>Vietnamese</span>
-                  </div>
-                  <div dangerouslySetInnerHTML={{ __html: translatedText }} />
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </button>
-
-          <AnimatePresence>
-            {showActions && !message.typing && (
-              <motion.div
-                initial={{ opacity: 0, y: 5, scale: 0.95 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: 5, scale: 0.95 }}
-                transition={{ duration: 0.2, ease: 'easeOut' }}
-                className={`absolute z-20 flex items-center gap-1 p-1 bg-white dark:bg-gray-800 rounded-full shadow-lg border border-gray-100 dark:border-gray-700 backdrop-blur-md bg-opacity-90 dark:bg-opacity-90 ${
-                  isAgent ? 'left-0 -top-10' : 'right-0 -top-10'
-                }`}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <ToolbarButton
-                  icon={
-                    isTranslating ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <Languages className="w-3.5 h-3.5" />
-                    )
-                  }
-                  label="Translate"
-                  onClick={(e) => handleTranslate(e)}
-                  active={showTranslation}
-                />
-                <ToolbarButton
-                  icon={
-                    isCopied ? (
-                      <Check className="w-3.5 h-3.5 text-green-500" />
-                    ) : (
-                      <Copy className="w-3.5 h-3.5" />
-                    )
-                  }
-                  label="Copy"
-                  onClick={handleCopy}
-                />
-                {onReplay && (
-                  <ToolbarButton
-                    icon={<Play className="w-3 h-3 fill-current" />}
-                    label="Speak"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onReplay();
-                    }}
+          {message.typing ? (
+            <TypingIndicator />
+          ) : message.text ? (
+            message.text
+          ) : !isAgent && message.userAudioUrl ? (
+            <span className="flex items-center gap-1.5 text-gray-400 text-xs">
+              <Mic className="w-3 h-3 animate-pulse" />
+              <span>Sending</span>
+              <span className="flex items-center gap-0.5">
+                {[0, 150, 300].map((delay) => (
+                  <span
+                    key={delay}
+                    className="w-1 h-1 rounded-full bg-gray-400 inline-block"
+                    style={{ animation: `dotPulse 1.2s ease-in-out ${delay}ms infinite` }}
                   />
-                )}
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-
+                ))}
+              </span>
+            </span>
+          ) : (
+            message.text
+          )}
+        </button>
         {isAgent && !message.typing && (message.toolSteps?.length ?? 0) > 0 && (
           <ReasoningSteps steps={message.toolSteps!} />
         )}
+        {isAgent && !message.typing && (message.suggestions?.length ?? 0) > 0 && onSuggestionClick && (
+          <div className="flex flex-wrap gap-1.5 mt-1">
+            {message.suggestions!.map((s, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => onSuggestionClick(s)}
+                className="text-xs px-2.5 py-1 rounded-full border border-blue-200 bg-white text-blue-600 hover:bg-blue-50 hover:border-blue-400 transition-colors"
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
-  );
-}
-
-interface ToolbarButtonProps {
-  icon: React.ReactNode;
-  label: string;
-  onClick: (e: React.MouseEvent) => void;
-  active?: boolean;
-}
-
-function ToolbarButton({ icon, label, onClick, active }: ToolbarButtonProps) {
-  return (
-    <button
-      onClick={onClick}
-      title={label}
-      className={`p-1.5 rounded-full transition-colors duration-200 flex items-center justify-center ${
-        active
-          ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
-          : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-400'
-      }`}
-    >
-      {icon}
-    </button>
   );
 }

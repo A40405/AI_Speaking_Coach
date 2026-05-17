@@ -1,6 +1,6 @@
 # API Documentation
 
-Tai lieu nay mo ta API backend hien tai trong `app/main.py` va `app/api/router.py`.
+Tai lieu nay mo ta API backend hien tai trong `app/main.py` va `app/api/routes.py`.
 
 ## Base URLs
 
@@ -162,7 +162,6 @@ Fields:
 - `text`: optional string
 - `history`: optional JSON-encoded array of prior messages
 - `topic`: optional topic label/code, max 80 chars
-- `sub_option`: optional scenario/sub-option inside the selected topic, max 120 chars
 - `voice_gender`: optional assistant voice selector, expected `Male` or `Female`
 - `audio_file`: optional uploaded audio
 - `conversation_id`: optional UUID to continue an existing conversation
@@ -195,8 +194,7 @@ Example with text:
 curl -X POST "http://127.0.0.1:8000/api/chat/respond" \
   -H "Authorization: Bearer <token>" \
   -F "text=Tell me about IELTS speaking" \
-  -F "topic=ielts_speaking" \
-  -F "sub_option=part_1_personal_questions" \
+  -F "topic=ielts1" \
   -F "voice_gender=Female"
 ```
 
@@ -206,7 +204,6 @@ Example with audio:
 curl -X POST "http://127.0.0.1:8000/api/chat/respond" \
   -H "Authorization: Bearer <token>" \
   -F "topic=daily_conversation" \
-  -F "sub_option=ordering_food" \
   -F "audio_file=@recording.webm;type=audio/webm"
 ```
 
@@ -236,7 +233,7 @@ Common errors:
 - `400`: no input provided
 - `400`: invalid `conversation_id`
 - `404`: conversation not found
-- `413`: text/history/topic/sub_option/audio exceeds limit
+- `413`: text/history/topic/audio exceeds limit
 - `415`: unsupported audio type or mismatched file signature
 
 ## 6. `POST /api/assess`

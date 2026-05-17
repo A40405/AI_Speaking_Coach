@@ -73,8 +73,8 @@ export default function useAudioCapture(
           await activationCtx.resume();
         }
       }
-    } catch (_err) {
-      // console.warn('[AudioCapture] Permission stage: AudioContext resume guard failed', _err);
+    } catch (err) {
+      // console.warn('[AudioCapture] Permission stage: AudioContext resume guard failed', err);
     }
 
     if (!mediaStreamRef.current) {
@@ -91,8 +91,8 @@ export default function useAudioCapture(
             channelCount: 1,
           },
         });
-      } catch (_err) {
-        // console.error('[AudioCapture] Permission stage: getUserMedia failed', _err);
+      } catch (err) {
+        // console.error('[AudioCapture] Permission stage: getUserMedia failed', err);
         return;
       }
     }
@@ -115,8 +115,8 @@ export default function useAudioCapture(
       recorder = negotiatedMimeType
         ? new MediaRecorder(mediaStreamRef.current, { mimeType: negotiatedMimeType })
         : new MediaRecorder(mediaStreamRef.current);
-    } catch (_err) {
-      // console.error('[AudioCapture] MediaRecorder init stage: failed to initialize', _err);
+    } catch (err) {
+      // console.error('[AudioCapture] MediaRecorder init stage: failed to initialize', err);
       return;
     } finally {
       if (activationCtx) {
@@ -135,7 +135,7 @@ export default function useAudioCapture(
       }
     };
 
-    recorder.onerror = (_event: Event) => {
+    recorder.onerror = (event: Event) => {
       // console.error('[AudioCapture] Capture/blob stage: MediaRecorder error', event);
     };
 
@@ -171,8 +171,8 @@ export default function useAudioCapture(
     try {
       // Avoid tiny timeslices that can behave inconsistently across browsers.
       recorder.start(250);
-    } catch (_err) {
-      // console.error('[AudioCapture] Capture/blob stage: failed to start recorder', _err);
+    } catch (err) {
+      // console.error('[AudioCapture] Capture/blob stage: failed to start recorder', err);
       return;
     }
 

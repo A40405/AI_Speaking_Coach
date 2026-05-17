@@ -143,7 +143,7 @@ export default function useSpeechRecognition({
         return false;
       }
 
-      // If the browser already produced a transcript, we trust it and pass the gate
+      // If the browser already produced a transcript, we trust it and pass the gate 
       // immediately to ensure the user's message is sent automatically.
       if (hasTranscript) return true;
 
@@ -162,9 +162,9 @@ export default function useSpeechRecognition({
     const safeStopRecording = async (reason: string): Promise<Blob | undefined> => {
       try {
         return await stopUserAudioCaptureRef.current();
-      } catch (_err) {
+      } catch (err) {
         if (reason !== 'effect cleanup') {
-          // console.error('[Speech] stopRecording threw:', { reason, err: _err });
+          // console.error('[Speech] stopRecording threw:', { reason, err });
         }
         return undefined;
       }
@@ -368,6 +368,7 @@ export default function useSpeechRecognition({
           }
 
           const messageText = (finalTranscript.trim() || interimTranscript.trim()).trim();
+          const quality = getLastSessionQualityRef.current();
 
           if (!passesVADQualityGate(!!messageText)) {
             // Only clear input if we didn't get any transcript from the browser.
@@ -414,8 +415,8 @@ export default function useSpeechRecognition({
           });
           */
           await Promise.resolve(sendChatMessageRef.current(messageText, recordedAudio));
-        } catch (_err) {
-          // console.error('[Speech] stop/send flow failed', _err);
+        } catch (err) {
+          // console.error('[Speech] stop/send flow failed', err);
           hasSentAny = false;
         } finally {
           clearTimeout(safetyTimer);
@@ -489,8 +490,8 @@ export default function useSpeechRecognition({
         if (!isHandlingEndRef.current && !hasSentAny) {
           try {
             await stopAndSend();
-          } catch (_err) {
-            // console.error('[Speech] onend flow failed', _err);
+          } catch (err) {
+            // console.error('[Speech] onend flow failed', err);
           }
         }
         if (stopped) return;

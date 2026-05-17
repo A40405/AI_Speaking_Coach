@@ -35,7 +35,7 @@ The product is built around a short feedback loop:
 ### Runtime stack
 
 - FastAPI app in `app/main.py`
-- routes in `app/api/router.py`
+- routes in `app/api/routes.py`
 - PostgreSQL for relational data
 - MinIO for audio objects
 - Groq for STT and LLM
@@ -75,7 +75,6 @@ Accepts:
 - text
 - optional history
 - optional topic
-- optional sub-option/scenario
 - optional audio file
 - optional conversation id
 
@@ -105,73 +104,7 @@ Returns:
 - per-word detail
 - syllable and phoneme detail
 
-## 7. Dynamic System Prompt Architecture
-
-The assistant prompt is now layered:
-
-`base_prompt -> topic_prompt -> sub_option.system_prompt`
-
-- `base_prompt`: global speaking-coach behavior for every conversation.
-- `topic_prompt`: broad context, goal, vocabulary scope, and difficulty control.
-- `sub_option.system_prompt`: the concrete role-play scenario. This is the most important layer because it defines user role, AI role, objective, and real-life constraints.
-
-Implementation files:
-
-- `app/prompts/topic_prompts.md`
-- `app/prompts/prompt_builder.py`
-- `app/services/groq_llm.py`
-
-Current JSON structure:
-
-```json
-{
-  "base_prompt": "Global speaking coach behavior...",
-  "topics": {
-    "daily_conversation": {
-      "aliases": ["daily", "daily conversation"],
-      "topic_prompt": "Topic context, goal, vocabulary, difficulty...",
-      "options": {
-        "ordering_food": {
-          "aliases": ["food & restaurant", "restaurant"],
-          "system_prompt": "Role-play scenario, user role, AI role, objective, constraints..."
-        }
-      }
-    }
-  }
-}
-```
-
-Current topic groups include:
-
-- `daily_conversation`: ordering food, weekend plans, shopping return, doctor visit
-- `job_interview`: tell me about yourself, strengths and weaknesses, salary negotiation, project update meeting
-- `travel`: airport check-in, hotel booking, asking directions, travel problem, ordering food
-- `ielts_speaking`: Part 1 personal questions, Part 2 cue card, Part 3 discussion, study-abroad interview
-
-Backend integration:
-
-- `/api/chat/respond` accepts `topic` and optional `sub_option`.
-- `normalize_history()` adds `Topic:` and `Sub-option:` metadata lines.
-- `GroqLLMService.generate_response()` extracts those lines and calls `build_system_prompt(topic, sub_option)`.
-- Unknown topics or sub-options fall back to a safe generic topic/scenario prompt instead of failing.
-
-Frontend integration:
-
-- `frontend/src/api/chat.js` supports a `subOption` parameter and sends it as multipart field `sub_option`.
-- Existing topic-only flows remain compatible.
-- Future UI should model each topic as a list of scenario options and pass both fields:
-
-```js
-chatRespond({
-  token,
-  text,
-  history,
-  topic: 'travel',
-  subOption: 'airport_check_in',
-});
-```
-
-## 8. Database Model
+## 7. Database Model
 
 Current relational model is conversation-based.
 
@@ -200,7 +133,7 @@ The active backend does **not** use the older `practice_sessions` / `message_eva
 - audio assets
 - pronunciation assessments
 
-## 9. Storage Model
+## 8. Storage Model
 
 Audio is stored in object storage, not local disk.
 
@@ -211,7 +144,7 @@ Current behavior:
 - API returns presigned URLs for replay
 - depending on MinIO endpoint/network configuration, those URLs may not always be directly reachable from the browser
 
-## 10. Security and Validation
+## 9. Security and Validation
 
 Current backend hardening includes:
 
@@ -224,7 +157,7 @@ Current backend hardening includes:
 - security headers on HTTP responses
 - reduced logging of raw transcript/response content
 
-## 11. Testing Strategy
+## 10. Testing Strategy
 
 ### Current approach
 
@@ -240,8 +173,9 @@ Current backend hardening includes:
 | `tests/test_ai_services/test_ai_services.py` | 25 |
 | `tests/test_api/test_schemas.py` | 30 |
 | `tests/test_api/test_routes.py` | 51 |
+| `tests/test_api/test_user_data_flow.py` | 18 |
 | `tests/test_services/test_azure_assessment.py` | 18 |
-| Total defined test functions | 147 |
+| Total defined test functions | 165 |
 
 ### Verified local result
 
@@ -251,17 +185,18 @@ In the current environment, the following verified subset passes:
 - routes
 - schemas
 - AI services
+- user data flow
+
 Azure service tests require the Azure Speech SDK dependency to be installed before they can be collected and executed.
 
-## 12. Current Frontend/Backend Contract Notes
+## 11. Current Frontend/Backend Contract Notes
 
 - frontend still uses `/api/chat/respond` and `/api/assess`
-- frontend can pass optional `sub_option` to select a scenario-specific prompt
 - `audio_base64` must be treated as optional
 - `assistant_audio_url` is deployment-dependent and should not be assumed browser-reachable in every environment
 - register flow now has stricter password requirements than legacy docs suggested
 
-## 13. Risks and Constraints
+## 12. Risks and Constraints
 
 ### Known operational constraints
 
@@ -270,15 +205,13 @@ Azure service tests require the Azure Speech SDK dependency to be installed befo
 - frontend latency may increase if chat and pronunciation assessment are run sequentially on the same user turn
 - current frontend still performs chat first and pronunciation assessment afterward on audio turns, so user-perceived latency can be higher than necessary
 
-## 14. Source of Truth
+## 13. Source of Truth
 
 For implementation truth, prefer:
 
 - `app/main.py`
-- `app/api/router.py`
+- `app/api/routes.py`
 - `app/api/schemas.py`
-- `app/prompts/topic_prompts.md`
-- `app/prompts/prompt_builder.py`
 - `db_schema/schema.sql`
 - `API.md`
 

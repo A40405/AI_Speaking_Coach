@@ -12,6 +12,7 @@ type WindowWithWebkit = Window &
 export interface UseVoiceRecorderParams {
   selectedMicId: string;
   onSend: (blob: Blob) => void;
+  autoSend?: boolean;
 }
 
 export interface UseVoiceRecorderResult {
@@ -32,9 +33,9 @@ export interface UseVoiceRecorderResult {
 
 const LIVE_BAR_COUNT = 42;
 const WAVEFORM_BAR_COUNT = 150;
-const SILENCE_THRESHOLD = 0.02; // amplitude below this = silence (speech boundary detection)
-const NOISE_GATE_FLOOR = 0.002; // amplitude below this = zeroed out (residual hiss removal)
-const TRIM_PADDING_MS = 100; // ms of audio kept before/after detected speech boundaries
+const SILENCE_THRESHOLD = 0.02;  // amplitude below this = silence (speech boundary detection)
+const NOISE_GATE_FLOOR  = 0.002; // amplitude below this = zeroed out (residual hiss removal)
+const TRIM_PADDING_MS   = 100;   // ms of audio kept before/after detected speech boundaries
 
 function writeWavString(view: DataView, offset: number, str: string): void {
   for (let i = 0; i < str.length; i++) {
@@ -53,13 +54,13 @@ function encodeWav(samples: Float32Array, sampleRate: number): Blob {
   view.setUint32(4, 36 + dataSize, true);
   writeWavString(view, 8, 'WAVE');
   writeWavString(view, 12, 'fmt ');
-  view.setUint32(16, 16, true); // fmt chunk size
-  view.setUint16(20, 1, true); // PCM format
-  view.setUint16(22, 1, true); // mono
-  view.setUint32(24, sampleRate, true); // sample rate
+  view.setUint32(16, 16, true);             // fmt chunk size
+  view.setUint16(20, 1, true);              // PCM format
+  view.setUint16(22, 1, true);              // mono
+  view.setUint32(24, sampleRate, true);     // sample rate
   view.setUint32(28, sampleRate * 2, true); // byte rate (sampleRate * blockAlign)
-  view.setUint16(32, 2, true); // block align (1 channel * 2 bytes)
-  view.setUint16(34, 16, true); // bits per sample
+  view.setUint16(32, 2, true);              // block align (1 channel * 2 bytes)
+  view.setUint16(34, 16, true);             // bits per sample
   writeWavString(view, 36, 'data');
   view.setUint32(40, dataSize, true);
 
@@ -106,7 +107,7 @@ function trimGateEncode(audioBuffer: AudioBuffer): Blob {
   // Add padding so leading/trailing consonants aren't clipped
   const paddingSamples = Math.round((TRIM_PADDING_MS / 1000) * sampleRate);
   const trimStart = Math.max(0, startSample - paddingSamples);
-  const trimEnd = Math.min(total, endSample + paddingSamples + 1);
+  const trimEnd   = Math.min(total, endSample + paddingSamples + 1);
 
   // Extract trimmed slice and apply noise gate
   const out = new Float32Array(trimEnd - trimStart);
@@ -152,6 +153,7 @@ function computeWaveformBars(audioBuffer: AudioBuffer, barCount: number): number
 export default function useVoiceRecorder({
   selectedMicId,
   onSend,
+  autoSend = false,
 }: UseVoiceRecorderParams): UseVoiceRecorderResult {
   const [status, setStatus] = useState<RecorderStatus>('idle');
   const [recordingTime, setRecordingTime] = useState(0);
@@ -161,6 +163,11 @@ export default function useVoiceRecorder({
   const [waveformData, setWaveformData] = useState<number[]>(Array(WAVEFORM_BAR_COUNT).fill(0));
   const [cleanBlob, setCleanBlob] = useState<Blob | null>(null);
   const [error, setError] = useState<RecorderError>(null);
+
+  const onSendRef = useRef(onSend);
+  const autoSendRef = useRef(autoSend);
+  useEffect(() => { onSendRef.current = onSend; }, [onSend]);
+  useEffect(() => { autoSendRef.current = autoSend; }, [autoSend]);
 
   const streamRef = useRef<MediaStream | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -280,7 +287,8 @@ export default function useVoiceRecorder({
 
     // Visualizer
     const Ctor =
-      (window as WindowWithWebkit).AudioContext || (window as WindowWithWebkit).webkitAudioContext!;
+      (window as WindowWithWebkit).AudioContext ||
+      (window as WindowWithWebkit).webkitAudioContext!;
     const ctx = new Ctor();
     audioCtxRef.current = ctx;
     const source = ctx.createMediaStreamSource(streamRef.current);
@@ -366,13 +374,46 @@ export default function useVoiceRecorder({
       void decodeAudioBuffer(blob)
         .then((audioBuf) => {
           if (cancelGenRef.current !== gen) return;
-          setWaveformData(computeWaveformBars(audioBuf, WAVEFORM_BAR_COUNT));
           const clean = trimGateEncode(audioBuf);
           cleanBlobRef.current = clean;
           setCleanBlob(clean);
+          if (autoSendRef.current) {
+            onSendRef.current(clean);
+            setStatus('done');
+            sendTimerRef.current = setTimeout(() => {
+              sendTimerRef.current = null;
+              revokeUrl();
+              audioBlobRef.current = null;
+              cleanBlobRef.current = null;
+              setAudioBlob(null);
+              setCleanBlob(null);
+              setRecordingTime(0);
+              setWaveformData(Array(WAVEFORM_BAR_COUNT).fill(0));
+              setStatus('idle');
+            }, 800);
+          } else {
+            setWaveformData(computeWaveformBars(audioBuf, WAVEFORM_BAR_COUNT));
+          }
         })
         .catch(() => {
-          /* use raw blob on decode failure */
+          if (autoSendRef.current && cancelGenRef.current === gen) {
+            const rawBlob = audioBlobRef.current;
+            if (rawBlob) {
+              onSendRef.current(rawBlob);
+              setStatus('done');
+              sendTimerRef.current = setTimeout(() => {
+                sendTimerRef.current = null;
+                revokeUrl();
+                audioBlobRef.current = null;
+                cleanBlobRef.current = null;
+                setAudioBlob(null);
+                setCleanBlob(null);
+                setRecordingTime(0);
+                setWaveformData(Array(WAVEFORM_BAR_COUNT).fill(0));
+                setStatus('idle');
+              }, 800);
+            }
+          }
         });
     };
 
@@ -382,7 +423,7 @@ export default function useVoiceRecorder({
       recorder.onstop = handleStop;
       recorder.stop();
     }
-  }, [stopVisualizer, stopTimer, releaseStream]);
+  }, [stopVisualizer, stopTimer, releaseStream, revokeUrl]);
 
   useEffect(() => {
     stopFnRef.current = stop;

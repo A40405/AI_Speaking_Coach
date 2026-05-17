@@ -8,29 +8,51 @@ from langgraph.prebuilt import ToolNode
 from app.agents.tools.flashcard_tools import FLASHCARD_TOOLS
 from app.core.logger import logger
 from app.core.telemetry import span_context
+from app.core.settings import TOOL_CALL_CAP as _TOOL_CALL_CAP
+from app.prompts.prompt_builder import load_blocked_response, load_preflight_prompt
 from app.services.elevenlabs_tts import ElevenLabsTTS
 from app.services.groq_llm import GroqLLMService
 from app.agents.state import AgentState
 
-_TOOL_CALL_CAP = 5
+def _degraded_coaching_fallback(user_input: str) -> tuple[str, list[str]]:
+    """Return a useful local fallback when upstream LLM calls fail.
 
-_PREFLIGHT_SYSTEM_PROMPT = """You are a pre-flight classifier for an English learning voice assistant.
+    Keeps tutoring continuity instead of exposing infrastructure errors.
+    """
+    text = (user_input or "").strip()
+    if not text:
+        return (
+            "No worries. Please share one short sentence in English, and I will help you improve it.",
+            ["I went to school yesterday.", "I feel nervous about speaking English."],
+        )
 
-Evaluate the user's message on TWO dimensions and reply in EXACTLY this format (two lines, no extra text):
-SAFETY: SAFE|UNSAFE
-TOOL: NEEDS_TOOL|NO_TOOL
+    lower = text.lower()
+    corrected = text
+    # Minimal deterministic corrections for very common learner mistakes.
+    corrected = corrected.replace(" i goed ", " i went ")
+    corrected = corrected.replace(" i goed", " i went")
+    corrected = corrected.replace("dont ", "don't ")
+    corrected = corrected.replace("cant ", "can't ")
 
-=== SAFETY ===
-SAFE — general conversation, language questions, educational/fictional/news context, any sensitive topic discussed for learning.
-UNSAFE — step-by-step harm instructions, violence against a specific target, sexual content involving minors, manipulation of real individuals.
+    if corrected != text:
+        response = (
+            f"Good effort. A more natural sentence is: \"{corrected}\". "
+            "Want to try one more sentence?"
+        )
+    elif "pronounce" in lower or "how to say" in lower:
+        response = (
+            "Great question. Tell me the exact word, and I will give you a simple pronunciation breakdown."
+        )
+    else:
+        response = (
+            "Thanks for sharing. Please add one more detail, and I will help you make it sound more natural."
+        )
 
-=== TOOL ===
-The assistant has flashcard tools (create deck, list decks, add card, review cards).
-NEEDS_TOOL — user EXPLICITLY asks to create/view/manage a deck or card, save/add a word, or review flashcards.
-NO_TOOL — everything else: greetings, small talk, language questions, pronunciation practice, or flashcard action implied only by prior conversation history."""
-
-_BLOCKED_RESPONSE = "I'm sorry, I can't help with that topic. Let's keep our practice focused on everyday English conversation!"
-
+    suggestions = [
+        "Can you correct this sentence for me?",
+        "How can I say this more naturally?",
+    ]
+    return response, suggestions
 
 def _sanitize_tool_messages(messages: list) -> list:
     """Ensure all ToolMessages have non-empty string content.
@@ -109,19 +131,32 @@ class VoiceAgentPipeline:
         blocked = False
         tool_intent = False
         try:
-            messages = [
-                SystemMessage(content=_PREFLIGHT_SYSTEM_PROMPT),
-                HumanMessage(content=user_input),
-            ]
+            messages: list = [SystemMessage(content=load_preflight_prompt())]
+            for line in state.get("history", [])[-4:]:
+                if line.startswith("User:"):
+                    messages.append(HumanMessage(content=line[5:].strip()))
+                elif line.startswith("Assistant:"):
+                    messages.append(AIMessage(content=line[10:].strip()))
+            messages.append(HumanMessage(content=user_input))
             result: AIMessage = self.llm_service.client.invoke(messages)
-            lines = {
-                part.split(":")[0].strip().upper(): part.split(":", 1)[1].strip().upper()
-                for part in (result.content or "").strip().splitlines()
-                if ":" in part
-            }
-            blocked = lines.get("SAFETY", "SAFE").startswith("UNSAFE")
+            lines: dict[str, str] = {}
+            for raw_line in (result.content or "").strip().splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    normalized_key = key.strip().upper()
+                    normalized_value = value.strip().upper()
+                    if normalized_key in {"SAFE", "UNSAFE"}:
+                        lines["SAFETY"] = normalized_key
+                    else:
+                        lines[normalized_key] = normalized_value
+                elif line.upper().startswith(("SAFE", "UNSAFE")):
+                    lines["SAFETY"] = line.upper()
+            blocked = lines.get("SAFETY", "SAFE").startswith("UNSAFE") or lines.get("SCOPE", "IN_SCOPE").startswith("OUT_OF_SCOPE")
             tool_intent = lines.get("TOOL", "NO_TOOL").startswith("NEEDS_TOOL")
-            logger.debug("preflight_node safety=%s tool=%s", lines.get("SAFETY"), lines.get("TOOL"))
+            logger.debug("preflight_node safety=%s scope=%s tool=%s", lines.get("SAFETY"), lines.get("SCOPE"), lines.get("TOOL"))
         except Exception as exc:
             logger.warning("preflight_node llm_error — failing open/closed: %s", exc)
 
@@ -131,8 +166,9 @@ class VoiceAgentPipeline:
                 **state,
                 "guardrail_blocked": True,
                 "tool_intent": False,
-                "response_text": _BLOCKED_RESPONSE,
+                "response_text": load_blocked_response(),
                 "audio_bytes": b"",
+                "suggestions": [],
             }
 
         logger.debug("preflight_node safe tool_intent=%s", tool_intent)
@@ -140,20 +176,38 @@ class VoiceAgentPipeline:
 
     def _respond_node(self, state: AgentState) -> AgentState:
         """Generate the assistant response, invoking tools if the LLM requests them."""
+        # Default must be 0 for first-turn responses; using 3 forces tool-mode
+        # and can trigger avoidable rate-limit fallbacks.
         iterations = state.get("_tool_call_iterations", 0)
         logger.debug("respond_node start input_length=%d tool_iterations=%d", len(state["user_input"]), iterations)
 
-        # Build message list from history + any prior tool messages in this turn
         from app.prompts.prompt_builder import build_system_prompt
         from app.services.groq_llm import SYSTEM_PROMPT
+
+        # Compute routing flags before building prompt so we know which mode to use
+        cap_reached = iterations >= _TOOL_CALL_CAP
+        intent_requires_tool = state.get("tool_intent", False) or iterations > 0
+        use_tools = not cap_reached and bool(state.get("user_id")) and intent_requires_tool
 
         dynamic_prompt = build_system_prompt(
             category=state.get("category"),
             topic=state.get("topic"),
             include_grammar=True,
+            use_structured_output=not use_tools,
         )
-        base_prompt = dynamic_prompt or SYSTEM_PROMPT
-        user_id = state.get("user_id")
+        if dynamic_prompt:
+            logger.info("respond_node system_prompt=dynamic chars=%d", len(dynamic_prompt))
+            base_prompt = dynamic_prompt
+        else:
+            logger.info("respond_node system_prompt=fallback SYSTEM_PROMPT (build_system_prompt returned empty)")
+            base_prompt = SYSTEM_PROMPT
+        if state.get("tool_intent") and not iterations:
+            base_prompt += (
+                "\n\n[TOOL CONTEXT] The user's current message continues an ongoing flashcard "
+                "workflow. Use the conversation history to determine the correct flashcard tool "
+                "and arguments — do not ask for clarification, infer from context and call the tool now."
+            )
+
         messages_to_send: list = [SystemMessage(content=base_prompt)]
 
         for line in state.get("history", [])[-8:]:
@@ -164,91 +218,157 @@ class VoiceAgentPipeline:
 
         messages_to_send.append(HumanMessage(content=state["user_input"]))
 
-        # Append any ToolMessages from previous iterations in this turn.
-        # Sanitize first: Groq rejects ToolMessages with empty/None/[] content.
         if state.get("messages"):
             messages_to_send.extend(_sanitize_tool_messages(state["messages"]))
 
-        cap_reached = iterations >= _TOOL_CALL_CAP
-        # tool_intent was decided once in preflight_node (state) — no extra LLM call here.
-        # Mid-loop (iterations > 0) we're already inside a tool-call cycle; keep tool_client.
-        intent_requires_tool = state.get("tool_intent", False) or iterations > 0
-        use_tools = not cap_reached and bool(state.get("user_id")) and intent_requires_tool
         if state.get("user_id") and not intent_requires_tool:
             logger.debug("respond_node tool_gated_off preflight=NO_TOOL")
-        llm = self.llm_service.tool_client if use_tools else self.llm_service.client
         logger.debug(
             "respond_node invoking_llm client=%s messages=%d cap_reached=%s intent_requires_tool=%s",
-            "tool_client" if use_tools else "plain",
+            "tool_client" if use_tools else "structured",
             len(messages_to_send),
             cap_reached,
             intent_requires_tool,
         )
 
-        with span_context("llm.respond", kind="llm") as span:
-            try:
-                ai_msg: AIMessage = llm.invoke(messages_to_send)
-            except RateLimitError as exc:
-                span.fail(str(exc))
-                logger.warning(
-                    "respond_node rate_limited iteration=%d: %s",
-                    iterations,
-                    exc,
+        raw_output: str | None = None
+        response_text: str = ""
+        grammar_raw: str | None = None
+        suggestions: list[str] = []
+
+        if use_tools:
+            with span_context("llm.respond", kind="llm") as span:
+                try:
+                    ai_msg: AIMessage = self.llm_service.tool_client.invoke(messages_to_send)
+                except RateLimitError as exc:
+                    span.fail(str(exc))
+                    logger.warning("respond_node rate_limited iteration=%d: %s", iterations, exc)
+                    degraded_text, degraded_suggestions = _degraded_coaching_fallback(state["user_input"])
+                    return {
+                        **state,
+                        "response_text": degraded_text,
+                        "messages": [],
+                        "_tool_call_iterations": iterations,
+                        "grammar_raw": None,
+                        "suggestions": degraded_suggestions,
+                    }
+                except BadRequestError as exc:
+                    span.fail(str(exc))
+                    logger.warning(
+                        "respond_node tool_use_failed — model emitted malformed tool call, retrying with plain client: %s",
+                        exc,
+                    )
+                    ai_msg = self.llm_service.client.invoke(messages_to_send)
+                usage = getattr(ai_msg, "usage_metadata", {}) or {}
+                span.set(
+                    model=self.llm_service.model_name,
+                    prompt_tokens=usage.get("input_tokens", 0),
+                    completion_tokens=usage.get("output_tokens", 0),
+                    total_tokens=usage.get("total_tokens", 0),
+                )
+
+            logger.debug(
+                "respond_node llm_response has_tool_calls=%s content_length=%d",
+                bool(ai_msg.tool_calls),
+                len(ai_msg.content or ""),
+            )
+
+            if ai_msg.tool_calls:
+                tool_names = [tc["name"] for tc in ai_msg.tool_calls]
+                tool_args = [{tc["name"]: tc.get("args", {})} for tc in ai_msg.tool_calls]
+                logger.info(
+                    "respond_node tool_calls_detected count=%d tools=%s args=%s iteration=%d",
+                    len(ai_msg.tool_calls),
+                    tool_names,
+                    tool_args,
+                    iterations + 1,
                 )
                 return {
                     **state,
-                    "response_text": "I'm a bit overwhelmed right now. Please try again in a moment.",
-                    "messages": [],
-                    "_tool_call_iterations": iterations,
-                    "grammar_raw": None,
+                    "messages": [ai_msg],
+                    "_tool_call_iterations": iterations + 1,
+                    "response_text": state.get("response_text", ""),
                 }
-            except BadRequestError as exc:
-                span.fail(str(exc))
-                logger.warning(
-                    "respond_node tool_use_failed — model emitted malformed tool call, retrying with plain client: %s",
-                    exc,
-                )
-                ai_msg = self.llm_service.client.invoke(messages_to_send)
-            usage = getattr(ai_msg, "usage_metadata", {}) or {}
-            span.set(
-                model=self.llm_service.model_name,
-                prompt_tokens=usage.get("input_tokens", 0),
-                completion_tokens=usage.get("output_tokens", 0),
-                total_tokens=usage.get("total_tokens", 0),
+
+            # LLM chose not to use a tool — XML parse fallback
+            from app.services.grammar_parser import split_combined_output_with_suggestions
+            raw_output = ai_msg.content or ""
+            response_text, grammar_raw, suggestions = split_combined_output_with_suggestions(raw_output)
+
+        else:
+            # Structured output path — AgentOutput returned directly, never has .tool_calls
+            from app.agents.output_models import AgentOutput
+            from app.services.grammar_parser import grammar_data_from_structured_output
+
+            with span_context("llm.respond", kind="llm") as span:
+                try:
+                    agent_out: AgentOutput = self.llm_service.structured_client.invoke(messages_to_send)
+                    span.set(model=self.llm_service.model_name)
+                except RateLimitError as exc:
+                    span.fail(str(exc))
+                    logger.warning("respond_node rate_limited iteration=%d: %s", iterations, exc)
+                    degraded_text, degraded_suggestions = _degraded_coaching_fallback(state["user_input"])
+                    return {
+                        **state,
+                        "response_text": degraded_text,
+                        "messages": [],
+                        "_tool_call_iterations": iterations,
+                        "grammar_raw": None,
+                        "suggestions": degraded_suggestions,
+                    }
+                except Exception as exc:
+                    span.fail(str(exc))
+                    logger.warning(
+                        "respond_node structured_output_failed — falling back to XML parse: %s", exc
+                    )
+                    from app.services.grammar_parser import split_combined_output_with_suggestions
+                    # Rebuild messages with XML-formatted prompt so the model returns
+                    # grammar/suggestions even on the fallback path.
+                    fallback_prompt = build_system_prompt(
+                        category=state.get("category"),
+                        topic=state.get("topic"),
+                        include_grammar=True,
+                        use_structured_output=False,
+                    ) or base_prompt
+                    fallback_messages = [SystemMessage(content=fallback_prompt)] + messages_to_send[1:]
+                    try:
+                        fallback_msg: AIMessage = self.llm_service.client.invoke(fallback_messages)
+                        raw_output = fallback_msg.content or ""
+                    except Exception as fallback_exc:
+                        logger.error("respond_node fallback_also_failed: %s", fallback_exc)
+                        degraded_text, degraded_suggestions = _degraded_coaching_fallback(state["user_input"])
+                        raw_output = degraded_text
+                        response_text = degraded_text
+                        grammar_raw = None
+                        suggestions = degraded_suggestions
+                        return {
+                            **state,
+                            "response_text": response_text,
+                            "raw_output": raw_output,
+                            "history": state.get("history", []) + [
+                                f"User: {state['user_input']}",
+                                f"Assistant: {response_text}",
+                            ],
+                            "grammar_raw": grammar_raw,
+                            "suggestions": suggestions,
+                            "messages": [],
+                            "_tool_call_iterations": iterations,
+                        }
+                    response_text, grammar_raw, suggestions = split_combined_output_with_suggestions(
+                        raw_output
+                    )
+                else:
+                    response_text = agent_out.response_text
+                    _, grammar_raw = grammar_data_from_structured_output(
+                        agent_out.grammar, state["user_input"]
+                    )
+                    suggestions = agent_out.suggestions[:3]
+
+            logger.debug(
+                "respond_node structured_response response_preview=%r grammar_present=%s",
+                response_text[:120] if response_text else "",
+                grammar_raw is not None,
             )
-
-        logger.debug(
-            "respond_node llm_response has_tool_calls=%s content_length=%d",
-            bool(ai_msg.tool_calls),
-            len(ai_msg.content or ""),
-        )
-
-        if ai_msg.tool_calls:
-            tool_names = [tc["name"] for tc in ai_msg.tool_calls]
-            tool_args = [{tc["name"]: tc.get("args", {})} for tc in ai_msg.tool_calls]
-            logger.info(
-                "respond_node tool_calls_detected count=%d tools=%s args=%s iteration=%d",
-                len(ai_msg.tool_calls),
-                tool_names,
-                tool_args,
-                iterations + 1,
-            )
-            return {
-                **state,
-                "messages": [ai_msg],
-                "_tool_call_iterations": iterations + 1,
-                "response_text": state.get("response_text", ""),
-            }
-
-        # No tool calls — final response; split <response> and <grammar> sections
-        from app.services.grammar_parser import split_combined_output
-        raw_output = ai_msg.content or ""
-        response_text, grammar_raw = split_combined_output(raw_output)
-        logger.debug(
-            "respond_node no_tool_calls response_preview=%r grammar_present=%s",
-            response_text[:120],
-            grammar_raw is not None,
-        )
 
         history = state.get("history", []) + [
             f"User: {state['user_input']}",
@@ -257,9 +377,11 @@ class VoiceAgentPipeline:
         return {
             **state,
             "response_text": response_text,
+            "raw_output": raw_output,
             "history": history,
             "grammar_raw": grammar_raw,
-            "messages": [ai_msg],
+            "suggestions": suggestions,
+            "messages": [],
             "_tool_call_iterations": iterations,
         }
 
@@ -308,6 +430,7 @@ class VoiceAgentPipeline:
             "voice_gender": voice_gender,
             "voice_accent": voice_accent,
             "grammar_raw": None,
+            "suggestions": [],
             "category": category,
             "topic": topic,
             "user_id": user_id,

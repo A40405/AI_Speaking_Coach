@@ -34,6 +34,7 @@ export interface ChatRespondResult {
   user_message_id?: string;
   tool_steps?: ToolCallStep[];
   grammar_detail?: GrammarFeedbackPayload | null;
+  suggestions?: string[];
 }
 
 export interface GrammarFeedbackItem {
@@ -54,6 +55,17 @@ export interface GrammarFeedbackPayload {
   corrected_sentence?: string;
   overall_score?: number;
 }
+
+function extensionFromMimeType(mimeType: string): string {
+  const mime = (mimeType || '').toLowerCase();
+  if (mime.includes('webm')) return 'webm';
+  if (mime.includes('ogg')) return 'ogg';
+  if (mime.includes('wav')) return 'wav';
+  if (mime.includes('mp4')) return 'mp4';
+  if (mime.includes('aac') || mime.includes('m4a')) return 'm4a';
+  return 'bin';
+}
+
 export async function chatRespond({
   token,
   text,
@@ -272,6 +284,7 @@ export async function transcribeAudio(token: string, audioBlob: Blob): Promise<s
   }
   return (data as { text?: string }).text ?? '';
 }
+
 
 export async function assessPronunciation({
   token,

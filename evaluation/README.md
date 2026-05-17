@@ -49,6 +49,20 @@ Each case in `dataset.json` follows this schema:
   A quick harm classification.
 - `notes`
   Extra context for QA and future maintainers.
+- `prompt_category`
+  Prompt-routing category sent to backend `category` during evaluation.
+- `prompt_topic`
+  Prompt-routing topic sent to backend `topic` during evaluation.
+- `routing_confidence`
+  Routing confidence label: `high`, `medium`, or `low`.
+- `routing_reason`
+  Short explanation for the selected prompt routing.
+- `expected_tool_usage`
+  Structural expectation for `tool_steps`: `required`, `forbidden`, or `none`.
+- `expected_grammar_detail`
+  Structural expectation for `grammar_detail`: `required`, `forbidden`, or `optional`.
+- `expected_suggestions`
+  Expected suggestions count bounds: `{ "min": <int>, "max": <int> }`.
 
 ## Category Definitions
 
@@ -157,6 +171,17 @@ Run every case through the chat layer and compare the response against:
 - conversational repair quality for noisy cases
 - correction style for grammar and pronunciation cases
 - stability under malformed or adversarial inputs
+
+Routing note:
+
+- Evaluation grouping/filtering uses `category` (taxonomy bucket).
+- Prompt routing uses per-case `prompt_category` and `prompt_topic` unless CLI flags override them.
+- `--topic` filtering in `run_evaluation.py` matches `prompt_topic` (and legacy `topic` when present).
+
+Ordering note:
+
+- Cases are intentionally ordered by evaluation category progression from basic recovery/grammar to adversarial safety.
+- This keeps smoke runs and manual review predictable instead of random.
 
 ### 2. Hard-case smoke tests
 
