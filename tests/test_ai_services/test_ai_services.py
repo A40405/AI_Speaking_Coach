@@ -691,3 +691,55 @@ def test_run_langraph_agent_blocked_skips_tts(monkeypatch):
     assert raw_output is None
     assert len(synthesize_calls) == 0, "TTS must not be called for guardrail-blocked responses"
     assert "sorry" in text.lower()
+
+
+class TestTTSProviderSelection:
+    def test_build_tts_service_uses_blaze_when_configured(self, monkeypatch):
+        monkeypatch.setenv("TTS_PROVIDER", "BLAZE")
+        from app.core import ai_services
+
+        class _FakeBlaze:
+            pass
+
+        with patch("app.services.blaze_tts.BlazeTTS", return_value=_FakeBlaze()):
+            svc = ai_services._build_tts_service()
+        assert isinstance(svc, _FakeBlaze)
+
+    def test_build_tts_service_defaults_to_elevenlabs(self, monkeypatch):
+        monkeypatch.delenv("TTS_PROVIDER", raising=False)
+        from app.core import ai_services
+
+        class _FakeEleven:
+            pass
+
+        with patch("app.services.elevenlabs_tts.ElevenLabsTTS", return_value=_FakeEleven()):
+            svc = ai_services._build_tts_service()
+        assert isinstance(svc, _FakeEleven)
+
+
+class TestSTTProviderSelection:
+    def test_get_stt_service_uses_blaze_when_configured(self, monkeypatch):
+        monkeypatch.setenv("STT_PROVIDER", "BLAZE")
+        from app.core import ai_services
+        ai_services.get_stt_service.cache_clear()
+
+        class _FakeBlazeSTT:
+            pass
+
+        with patch("app.services.blaze_stt.BlazeSTTService", return_value=_FakeBlazeSTT()):
+            svc = ai_services.get_stt_service()
+        assert isinstance(svc, _FakeBlazeSTT)
+        ai_services.get_stt_service.cache_clear()
+
+    def test_get_stt_service_defaults_to_groq(self, monkeypatch):
+        monkeypatch.delenv("STT_PROVIDER", raising=False)
+        from app.core import ai_services
+        ai_services.get_stt_service.cache_clear()
+
+        class _FakeGroqSTT:
+            pass
+
+        with patch("app.services.groq_stt.GroqSTTService", return_value=_FakeGroqSTT()):
+            svc = ai_services.get_stt_service()
+        assert isinstance(svc, _FakeGroqSTT)
+        ai_services.get_stt_service.cache_clear()

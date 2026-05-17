@@ -5,18 +5,31 @@ from functools import lru_cache
 from app.core.logger import logger
 
 
+def _build_tts_service():
+    provider = (os.getenv("TTS_PROVIDER", "ELEVENLABS") or "ELEVENLABS").strip().upper()
+    if provider == "BLAZE":
+        from app.services.blaze_tts import BlazeTTS
+
+        logger.info("Using TTS provider: BLAZE")
+        return BlazeTTS()
+
+    from app.services.elevenlabs_tts import ElevenLabsTTS
+
+    logger.info("Using TTS provider: ELEVENLABS")
+    return ElevenLabsTTS()
+
+
 @lru_cache(maxsize=1)
 def get_voice_agent_pipeline():
     """Lazily initialize and cache the voice agent pipeline (LLM + TTS)."""
     from app.agents.pipeline import VoiceAgentPipeline
-    from app.services.elevenlabs_tts import ElevenLabsTTS
     from app.services.groq_llm import GroqLLMService
 
     llm_model = os.getenv("GROQ_LLM_MODEL", "llama-3.3-70b-versatile")
     logger.info("Initializing VoiceAgentPipeline llm_model=%s", llm_model)
     pipeline = VoiceAgentPipeline(
         llm_service=GroqLLMService(model_name=llm_model),
-        tts_service=ElevenLabsTTS(),
+        tts_service=_build_tts_service(),
     )
     logger.info("VoiceAgentPipeline initialized and cached")
     return pipeline
@@ -25,6 +38,16 @@ def get_voice_agent_pipeline():
 @lru_cache(maxsize=1)
 def get_stt_service():
     """Lazily initialize and cache the speech-to-text service."""
+    provider = (os.getenv("STT_PROVIDER", "GROQ") or "GROQ").strip().upper()
+    if provider == "BLAZE":
+        from app.services.blaze_stt import BlazeSTTService
+
+        stt_model = os.getenv("BLAZE_STT_MODEL", "stt-async-1.0")
+        logger.info("Initializing BlazeSTTService model=%s", stt_model)
+        service = BlazeSTTService(model_name=stt_model, language="en")
+        logger.info("BlazeSTTService initialized and cached")
+        return service
+
     from app.services.groq_stt import GroqSTTService
 
     stt_model = os.getenv("GROQ_STT_MODEL", "whisper-large-v3-turbo")
