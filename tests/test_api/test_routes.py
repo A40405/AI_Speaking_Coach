@@ -1,4 +1,4 @@
-# tests/test_api/test_routes.py
+﻿# tests/test_api/test_routes.py
 """
 Unit tests for app.api.routes
 Covers: POST /api/auth/login
@@ -24,7 +24,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch, call
 
-# ── Stub `minio` BEFORE any app import ───────────────────────────────────────
+# â”€â”€ Stub `minio` BEFORE any app import â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 _minio_stub = types.ModuleType("minio")
 _minio_stub.Minio = MagicMock  # type: ignore[attr-defined]
 _minio_error_stub = types.ModuleType("minio.error")
@@ -32,7 +32,7 @@ _minio_error_stub.S3Error = Exception  # type: ignore[attr-defined]
 sys.modules.setdefault("minio", _minio_stub)
 sys.modules.setdefault("minio.error", _minio_error_stub)
 
-# ── Env BEFORE importing app ──────────────────────────────────────────────────
+# â”€â”€ Env BEFORE importing app â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-pytest-only-xx")
 os.environ.setdefault("POSTGRES_PASSWORD", "test-password-strong-2026")
 os.environ.setdefault("POSTGRES_DB", "test_db")
@@ -47,7 +47,7 @@ from fastapi.testclient import TestClient
 from starlette.datastructures import UploadFile as StarletteUploadFile
 from tests.helpers.db_mocks import make_mock_connection
 
-# Import app ONCE — reused across all tests with per-test patches
+# Import app ONCE â€” reused across all tests with per-test patches
 with (
     patch("app.core.database.init_db_pool"),
     patch("app.core.storage.init_storage"),
@@ -612,7 +612,7 @@ class TestChatRespond:
     def test_chat_respond_text_happy_path(self):
         with (
             _client(self._new_conv_conn()) as (c, _),
-            patch("app.api.chat.run_langraph_agent", return_value=("Great job!", b"mp3data", None, [], [])),
+            patch("app.api.chat.run_langraph_agent", return_value=("Great job!", b"mp3data", None, [], [], None)),
             patch("app.api.chat.store_user_audio", return_value=None),
             patch("app.api.chat._upload"),
         ):
@@ -635,7 +635,7 @@ class TestChatRespond:
             }
         )
         with (
-            patch("app.api.chat.run_langraph_agent", return_value=("Reply!", b"audiodata", None, [], [])),
+            patch("app.api.chat.run_langraph_agent", return_value=("Reply!", b"audiodata", None, [], [], None)),
             patch("app.api.chat.store_user_audio", return_value=None),
             patch("app.api.chat._upload"),
         ):
@@ -648,7 +648,7 @@ class TestChatRespond:
         with (
             _client(self._new_conv_conn()) as (c, _),
             patch("app.api.chat.transcribe_audio", return_value="I said hello") as mock_stt,
-            patch("app.api.chat.run_langraph_agent", return_value=("Nice!", b"mp3", None, [], [])),
+            patch("app.api.chat.run_langraph_agent", return_value=("Nice!", b"mp3", None, [], [], None)),
             patch("app.api.chat.store_user_audio", return_value=("key", "audio/webm")),
             patch("app.api.chat._upload"),
         ):
@@ -696,7 +696,7 @@ class TestChatRespond:
         conn = _make_conn(fetchone_side_effect=[None])
         with (
             _client(conn) as (c, _),
-            patch("app.api.chat.run_langraph_agent", return_value=("reply", b"", None, [], [])),
+            patch("app.api.chat.run_langraph_agent", return_value=("reply", b"", None, [], [], None)),
         ):
             r = c.post(
                 "/api/chat/respond",
@@ -718,7 +718,7 @@ class TestChatRespond:
             }
         )
         with (
-            patch("app.api.chat.run_langraph_agent", return_value=("Great job!", b"", None, [], suggestions)),
+            patch("app.api.chat.run_langraph_agent", return_value=("Great job!", b"", None, [], suggestions, None)),
             patch("app.api.chat.store_user_audio", return_value=None),
             patch("app.api.chat._upload"),
         ):
@@ -748,7 +748,7 @@ class TestChatRespond:
             }
         )
         with (
-            patch("app.api.chat.run_langraph_agent", return_value=("Great job!", b"", None, [], suggestions)),
+            patch("app.api.chat.run_langraph_agent", return_value=("Great job!", b"", None, [], suggestions, None)),
             patch("app.api.chat.store_user_audio", return_value=None),
             patch("app.api.chat._upload"),
         ):
@@ -760,7 +760,7 @@ class TestChatRespond:
 
 
 # ===========================================================================
-# POST /api/chat/respond — voice_accent forwarding
+# POST /api/chat/respond â€” voice_accent forwarding
 # ===========================================================================
 
 class TestChatRespondVoiceAccent:
@@ -783,7 +783,7 @@ class TestChatRespondVoiceAccent:
     def test_voice_accent_is_forwarded_to_run_langraph_agent(self):
         with (
             _client(self._new_conv_conn()) as (c, _),
-            patch("app.api.chat.run_langraph_agent", return_value=("Good!", b"mp3data", None, [], [])) as mock_agent,
+            patch("app.api.chat.run_langraph_agent", return_value=("Good!", b"mp3data", None, [], [], None)) as mock_agent,
             patch("app.api.chat.store_user_audio", return_value=None),
             patch("app.api.chat._upload"),
         ):
@@ -800,7 +800,7 @@ class TestChatRespondVoiceAccent:
     def test_missing_voice_accent_passes_none_to_run_langraph_agent(self):
         with (
             _client(self._new_conv_conn()) as (c, _),
-            patch("app.api.chat.run_langraph_agent", return_value=("Good!", b"mp3data", None, [], [])) as mock_agent,
+            patch("app.api.chat.run_langraph_agent", return_value=("Good!", b"mp3data", None, [], [], None)) as mock_agent,
             patch("app.api.chat.store_user_audio", return_value=None),
             patch("app.api.chat._upload"),
         ):
@@ -1000,7 +1000,7 @@ def test_read_and_close_upload_closes_temp_file():
 # ===========================================================================
 
 class TestAssessRoute:
-    """Tests for POST /api/assess — pronunciation assessment endpoint."""
+    """Tests for POST /api/assess â€” pronunciation assessment endpoint."""
 
     def _headers(self, auth_headers):
         headers, _ = auth_headers()
@@ -1166,3 +1166,4 @@ class TestAssessRoute:
             files={"audio_file": ("test.wav", b"not-a-real-wav", "audio/wav")},
         )
         assert resp.status_code == 415
+

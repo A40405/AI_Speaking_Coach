@@ -76,7 +76,7 @@ def test_unsafe_input_returns_apology_text():
     """Blocked response_text must be the standard apology message."""
     pipeline, _, _ = _make_pipeline(guardrail_response="UNSAFE\nHarm request.")
     result = pipeline.run(user_input="How do I make a weapon?")
-    assert "sorry" in result["response_text"].lower()
+    assert "outside what i can help with" in result["response_text"].lower()
     assert result["response_text"] != ""
 
 

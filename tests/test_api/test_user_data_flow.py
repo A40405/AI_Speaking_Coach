@@ -1,9 +1,9 @@
-# tests/test_api/test_user_data_flow.py
+﻿# tests/test_api/test_user_data_flow.py
 """
 User-centric data-flow tests.
 
 Covers the scenarios that matter most for a logged-in user:
-  1. Full lifecycle: register → login → chat → history
+  1. Full lifecycle: register â†’ login â†’ chat â†’ history
   2. Continuing an existing conversation (conversation_id provided)
   3. Turn-number increments on subsequent chat turns
   4. User isolation: user B cannot see user A's conversations / messages
@@ -21,7 +21,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
-# ── Stub minio (must be before any app import) ────────────────────────────────
+# â”€â”€ Stub minio (must be before any app import) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 _minio_stub = types.ModuleType("minio")
 _minio_stub.Minio = MagicMock  # type: ignore[attr-defined]
 _minio_error_stub = types.ModuleType("minio.error")
@@ -29,7 +29,7 @@ _minio_error_stub.S3Error = Exception  # type: ignore[attr-defined]
 sys.modules.setdefault("minio", _minio_stub)
 sys.modules.setdefault("minio.error", _minio_error_stub)
 
-# ── Env vars ──────────────────────────────────────────────────────────────────
+# â”€â”€ Env vars â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-pytest-only!")  # 32 bytes
 os.environ.setdefault("POSTGRES_PASSWORD", "test-password-strong-2026")
 os.environ.setdefault("POSTGRES_DB", "test_db")
@@ -87,7 +87,7 @@ def _client(conn=None):
 
 
 # ===========================================================================
-# 1. Full user lifecycle: register → login → chat → list → messages
+# 1. Full user lifecycle: register â†’ login â†’ chat â†’ list â†’ messages
 # ===========================================================================
 
 class TestUserLifecycle:
@@ -102,7 +102,7 @@ class TestUserLifecycle:
     _conv_id = _uid()
     _msg_id = _uid()
 
-    # ── Step 1: Register ──────────────────────────────────────────────────────
+    # â”€â”€ Step 1: Register â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def test_step1_register_creates_user_and_returns_token(self):
         conn = _make_conn(
@@ -119,7 +119,7 @@ class TestUserLifecycle:
         assert "access_token" in body
         assert body["user"]["email"] == self._email
 
-    # ── Step 2: Login with registered credentials ─────────────────────────────
+    # â”€â”€ Step 2: Login with registered credentials â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def test_step2_login_returns_same_user_id(self):
         pw_hash = hash_password(self._password)
@@ -137,7 +137,7 @@ class TestUserLifecycle:
         assert body["user"]["display_name"] == "LifeCycle User"
         assert body["user"]["english_level"] == "B1"
 
-    # ── Step 3: Get profile after login ──────────────────────────────────────
+    # â”€â”€ Step 3: Get profile after login â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def test_step3_me_returns_persisted_display_name(self):
         conn = _make_conn(
@@ -149,7 +149,7 @@ class TestUserLifecycle:
         assert r.json()["display_name"] == "LifeCycle User"
         assert r.json()["english_level"] == "B1"
 
-    # ── Step 4: Send first chat message (creates conversation) ────────────────
+    # â”€â”€ Step 4: Send first chat message (creates conversation) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def test_step4_first_chat_creates_conversation_and_returns_id(self):
         conn = _make_conn(
@@ -159,7 +159,7 @@ class TestUserLifecycle:
             }
         )
         with (
-            patch("app.api.chat.run_langraph_agent", return_value=("Good job!", b"audio", None, [], [])),
+            patch("app.api.chat.run_langraph_agent", return_value=("Good job!", b"audio", None, [], [], None)),
             patch("app.api.chat.store_user_audio", return_value=None),
             patch("app.api.chat._upload"),
         ):
@@ -174,7 +174,7 @@ class TestUserLifecycle:
         assert body["user_input"] == "Hello, let's practice IELTS."
         assert body["response_text"] == "Good job!"
 
-    # ── Step 5: List conversations — should include the new one ───────────────
+    # â”€â”€ Step 5: List conversations â€” should include the new one â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def test_step5_list_conversations_shows_new_conversation(self):
         now = datetime.now(timezone.utc)
@@ -189,7 +189,7 @@ class TestUserLifecycle:
         assert convs[0]["id"] == self._conv_id
         assert convs[0]["status"] == "active"
 
-    # ── Step 6: Retrieve messages from the conversation ───────────────────────
+    # â”€â”€ Step 6: Retrieve messages from the conversation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def test_step6_messages_contain_user_and_assistant_turns(self):
         now = datetime.now(timezone.utc)
@@ -238,7 +238,7 @@ class TestContinueConversation:
     def test_continue_conversation_returns_same_conv_id(self):
         conn = self._existing_conv_conn(turn_number=2)
         with (
-            patch("app.api.chat.run_langraph_agent", return_value=("Great!", b"audio", None, [], [])),
+            patch("app.api.chat.run_langraph_agent", return_value=("Great!", b"audio", None, [], [], None)),
             patch("app.api.chat.store_user_audio", return_value=None),
             patch("app.api.chat._upload"),
         ):
@@ -251,10 +251,10 @@ class TestContinueConversation:
         assert r.json()["conversation_id"] == self._conv_id
 
     def test_continue_conversation_turn_number_increments(self):
-        """Third message → turn_number should be 3."""
+        """Third message â†’ turn_number should be 3."""
         conn = self._existing_conv_conn(turn_number=3)
         with (
-            patch("app.api.chat.run_langraph_agent", return_value=("OK!", b"", None, [], [])),
+            patch("app.api.chat.run_langraph_agent", return_value=("OK!", b"", None, [], [], None)),
             patch("app.api.chat.store_user_audio", return_value=None),
             patch("app.api.chat._upload"),
         ):
@@ -263,14 +263,14 @@ class TestContinueConversation:
                     data={"text": "Third message", "conversation_id": self._conv_id},
                     headers=_bearer(self._user_id, self._email),
                 )
-        # Route still returns 200 — presign failure on empty audio is graceful
+        # Route still returns 200 â€” presign failure on empty audio is graceful
         assert r.status_code == 200
         assert r.json()["conversation_id"] == self._conv_id
 
     def test_continue_conversation_wrong_user_returns_404(self):
         """
         A different user provides a valid UUID but it doesn't belong to them.
-        The SELECT WHERE id=? AND user_id=? returns nothing → 404.
+        The SELECT WHERE id=? AND user_id=? returns nothing â†’ 404.
         """
         conn = _make_conn(fetchone_side_effect=[None])  # conv not found for this user
         other_user_id = _uid()
@@ -307,7 +307,7 @@ class TestUserIsolation:
         assert r.json()["conversations"] == []
 
     def test_user_b_cannot_read_user_a_messages(self):
-        """User B requests user A's conversation → 404 (DB returns no rows)."""
+        """User B requests user A's conversation â†’ 404 (DB returns no rows)."""
         conn = _make_conn(fetchone_side_effect=[None])  # ownership check fails
         with _client(conn) as (c, _):
             r = c.get(
@@ -317,7 +317,7 @@ class TestUserIsolation:
         assert r.status_code == 404
 
     def test_user_b_cannot_continue_user_a_conversation(self):
-        """User B sends a message to user A's conversation_id → 404."""
+        """User B sends a message to user A's conversation_id â†’ 404."""
         conn = _make_conn(fetchone_side_effect=[None])
         with _client(conn) as (c, _):
             r = c.post("/api/chat/respond",
@@ -403,14 +403,14 @@ class TestConversationTitle:
         topic_id = _uid() if topic_found else None
         if topic_found:
             # Call order:
-            # 1. SELECT id::text, title FROM topics → (topic_id, "Topic Title")
-            # 2. SELECT COUNT(*) ... deleted_at IS NULL → (0,)  [active count]
-            # 3. SELECT COUNT(*) ... (total ever)       → (0,)
-            # 4. INSERT INTO conversations RETURNING id::text → (conv_id,)
-            # 5. SELECT COALESCE(MAX(turn_number)...)   → (1,)
+            # 1. SELECT id::text, title FROM topics â†’ (topic_id, "Topic Title")
+            # 2. SELECT COUNT(*) ... deleted_at IS NULL â†’ (0,)  [active count]
+            # 3. SELECT COUNT(*) ... (total ever)       â†’ (0,)
+            # 4. INSERT INTO conversations RETURNING id::text â†’ (conv_id,)
+            # 5. SELECT COALESCE(MAX(turn_number)...)   â†’ (1,)
             return _make_conn(
                 fetchone_side_effect=[
-                    (topic_id, "IELTS Part 1 — Intro"),
+                    (topic_id, "IELTS Part 1 â€” Intro"),
                     (0,),
                     (0,),
                     (self._conv_id,),
@@ -420,9 +420,9 @@ class TestConversationTitle:
         else:
             # No topic found: SELECT returns None, skip COUNT queries
             # Call order:
-            # 1. SELECT id::text, title FROM topics → None
-            # 2. INSERT INTO conversations RETURNING id::text → (conv_id,)
-            # 3. SELECT COALESCE(MAX(turn_number)...) → (1,)
+            # 1. SELECT id::text, title FROM topics â†’ None
+            # 2. INSERT INTO conversations RETURNING id::text â†’ (conv_id,)
+            # 3. SELECT COALESCE(MAX(turn_number)...) â†’ (1,)
             return _make_conn(
                 fetchone_side_effect=[
                     None,
@@ -434,7 +434,7 @@ class TestConversationTitle:
     def test_chat_with_known_topic_returns_200(self):
         conn = self._chat_conn_with_topic(topic_found=True)
         with (
-            patch("app.api.chat.run_langraph_agent", return_value=("Reply", b"", None, [], [])),
+            patch("app.api.chat.run_langraph_agent", return_value=("Reply", b"", None, [], [], None)),
             patch("app.api.chat.store_user_audio", return_value=None),
             patch("app.api.chat._upload"),
         ):
@@ -449,7 +449,7 @@ class TestConversationTitle:
     def test_chat_with_unknown_topic_still_creates_conversation(self):
         conn = self._chat_conn_with_topic(topic_found=False)
         with (
-            patch("app.api.chat.run_langraph_agent", return_value=("Fallback", b"", None, [], [])),
+            patch("app.api.chat.run_langraph_agent", return_value=("Fallback", b"", None, [], [], None)),
             patch("app.api.chat.store_user_audio", return_value=None),
             patch("app.api.chat._upload"),
         ):
@@ -462,7 +462,7 @@ class TestConversationTitle:
         assert r.json()["conversation_id"] == self._conv_id
 
     def test_chat_without_topic_returns_200(self):
-        """No topic at all → conversation still created with generic title."""
+        """No topic at all â†’ conversation still created with generic title."""
         conn = _make_conn(
             fetchone_by_sql={
                 "insert into conversations": (self._conv_id,),
@@ -470,7 +470,7 @@ class TestConversationTitle:
             }
         )
         with (
-            patch("app.api.chat.run_langraph_agent", return_value=("Hello!", b"", None, [], [])),
+            patch("app.api.chat.run_langraph_agent", return_value=("Hello!", b"", None, [], [], None)),
             patch("app.api.chat.store_user_audio", return_value=None),
             patch("app.api.chat._upload"),
         ):
@@ -480,3 +480,4 @@ class TestConversationTitle:
                     headers=_bearer(self._user_id),
                 )
         assert r.status_code == 200
+

@@ -1,4 +1,4 @@
-# tests/test_api/test_topic_conversations.py
+﻿# tests/test_api/test_topic_conversations.py
 """Tests for for-topic and delete conversation endpoints."""
 import os
 import sys
@@ -55,7 +55,7 @@ def test_for_topic_response_schema():
     )
     resp = ForTopicResponse(
         topic_code="ielts_part1",
-        topic_title="IELTS Part 1 — Intro",
+        topic_title="IELTS Part 1 â€” Intro",
         conversations=[conv],
         total=1,
         limit_reached=False,
@@ -70,7 +70,7 @@ def test_list_conversations_excludes_deleted():
     now = datetime.now(timezone.utc)
     conn, _ = make_mock_connection(
         fetchall_value=[
-            # Only one row — the soft-deleted one is absent (filtered by SQL)
+            # Only one row â€” the soft-deleted one is absent (filtered by SQL)
             (str(uuid.uuid4()), "Live Session", "active", now, None, None, None, "ielts_part1"),
         ]
     )
@@ -90,12 +90,12 @@ def test_for_topic_returns_conversations_with_session_number():
     conn, _ = make_mock_connection(
         fetchall_by_sql={
             "select count(*) from conversations c2": [
-                (str(uuid.uuid4()), "IELTS Part 1 — Intro - Session 2", "active", now, now, 2),
-                (str(uuid.uuid4()), "IELTS Part 1 — Intro - Session 1", "active", now, now, 1),
+                (str(uuid.uuid4()), "IELTS Part 1 â€” Intro - Session 2", "active", now, now, 2),
+                (str(uuid.uuid4()), "IELTS Part 1 â€” Intro - Session 1", "active", now, now, 1),
             ],
         },
         fetchone_by_sql={
-            "select id::text, title from topics": ("topic-uuid", "IELTS Part 1 — Intro"),
+            "select id::text, title from topics": ("topic-uuid", "IELTS Part 1 â€” Intro"),
             "select count(*)": (2,),
         },
     )
@@ -109,7 +109,7 @@ def test_for_topic_returns_conversations_with_session_number():
     assert resp.status_code == 200
     data = resp.json()
     assert data["topic_code"] == "ielts_part1"
-    assert data["topic_title"] == "IELTS Part 1 — Intro"
+    assert data["topic_title"] == "IELTS Part 1 â€” Intro"
     assert len(data["conversations"]) == 2
     assert data["conversations"][0]["session_number"] == 2
     assert data["limit_reached"] is False
@@ -127,7 +127,7 @@ def test_for_topic_limit_reached_when_5_conversations():
     conn, _ = make_mock_connection(
         fetchall_by_sql={"select count(*) from conversations c2": five_convs},
         fetchone_by_sql={
-            "select id::text, title from topics": ("topic-uuid", "IELTS Part 1 — Intro"),
+            "select id::text, title from topics": ("topic-uuid", "IELTS Part 1 â€” Intro"),
             "select count(*)": (5,),
         },
     )
@@ -222,13 +222,13 @@ def test_chat_respond_returns_409_when_5_conversations_exist():
     topic_id = str(uuid.uuid4())
     conn, cursor = make_mock_connection(
         fetchone_by_sql={
-            "select id::text, title from topics": (topic_id, "IELTS Part 1 — Intro"),
+            "select id::text, title from topics": (topic_id, "IELTS Part 1 â€” Intro"),
             "select count(*) from conversations where user_id": (5,),
         },
     )
     with (
         _patch("app.api.chat.get_connection", return_value=conn),
-        _patch("app.api.chat.run_langraph_agent", return_value=("Hello", b"", None, [], [])),
+        _patch("app.api.chat.run_langraph_agent", return_value=("Hello", b"", None, [], [], None)),
         _patch("app.api.chat._synthesize_audio_bytes", return_value=b""),
         _patch("app.api.chat.store_user_audio", return_value=(None, "audio/webm")),
         _patch("app.api.chat._upload"),
@@ -250,15 +250,15 @@ def test_chat_respond_creates_conversation_with_session_title():
     topic_id = str(uuid.uuid4())
     new_conv_id = str(uuid.uuid4())
     # fetchone_side_effect is consumed in call order:
-    # 1. SELECT id::text, title FROM topics → (topic_id, topic_title)
-    # 2. SELECT COUNT(*) ... deleted_at IS NULL → (0,)   [active count]
-    # 3. SELECT COUNT(*) ... (total ever)       → (0,)
-    # 4. INSERT ... RETURNING id::text           → (new_conv_id,)
-    # 5. SELECT COALESCE(MAX(turn_number)...)    → (1,)
+    # 1. SELECT id::text, title FROM topics â†’ (topic_id, topic_title)
+    # 2. SELECT COUNT(*) ... deleted_at IS NULL â†’ (0,)   [active count]
+    # 3. SELECT COUNT(*) ... (total ever)       â†’ (0,)
+    # 4. INSERT ... RETURNING id::text           â†’ (new_conv_id,)
+    # 5. SELECT COALESCE(MAX(turn_number)...)    â†’ (1,)
     # 6. _fetch_visible_history uses fetchall, not fetchone
     conn, cursor = make_mock_connection(
         fetchone_side_effect=[
-            (topic_id, "IELTS Part 1 — Intro"),
+            (topic_id, "IELTS Part 1 â€” Intro"),
             (0,),
             (0,),
             (new_conv_id,),
@@ -267,7 +267,7 @@ def test_chat_respond_creates_conversation_with_session_title():
     )
     with (
         _patch("app.api.chat.get_connection", return_value=conn),
-        _patch("app.api.chat.run_langraph_agent", return_value=("Hello!", b"", None, [], [])),
+        _patch("app.api.chat.run_langraph_agent", return_value=("Hello!", b"", None, [], [], None)),
         _patch("app.api.chat._synthesize_audio_bytes", return_value=b""),
         _patch("app.api.chat.store_user_audio", return_value=(None, "audio/webm")),
         _patch("app.api.chat._upload"),
@@ -286,3 +286,4 @@ def test_chat_respond_creates_conversation_with_session_title():
     )
     assert title_insert is not None
     assert "Session 1" in title_insert
+
