@@ -2,208 +2,173 @@
 
 > Project: AI Speaking Coach (A20-App-014)  
 > Framework: `pytest`  
-> Scope: backend unit and route tests
+> Scope: all tests under `tests/` (unit, API, integration-style mocked flows)
 
 ## 1. Overview
 
-The backend test suite is designed around isolated tests with mocked external dependencies.
+The suite is mock-heavy and optimized for deterministic local runs:
 
-Goals:
+- no real PostgreSQL or object storage needed
+- AI providers are mocked at service/route boundaries
+- API behavior is verified with `TestClient` + mocked DB cursors
+- guardrails and prompt contracts are covered with focused unit tests
 
-- no real PostgreSQL/MinIO/Groq/ElevenLabs calls for the main suite
-- predictable route behavior through mocked DB cursors
-- fast feedback for auth, API, schema, and service logic
+## 2. Current Test Inventory (100% matched)
 
-## 2. Current Test Modules
+Current source of truth: `python -m pytest tests --collect-only -qq`  
+Collected tests: **525**
 
-| Module | File | Test Count |
-| --- | --- | ---: |
-| Security | `tests/test_security/test_security.py` | 23 |
-| AI services | `tests/test_ai_services/test_ai_services.py` | 25 |
-| API schemas | `tests/test_api/test_schemas.py` | 30 |
-| API routes | `tests/test_api/test_routes.py` | 51 |
-| User data flow | `tests/test_api/test_user_data_flow.py` | 18 |
-| Azure assessment service | `tests/test_services/test_azure_assessment.py` | 18 |
-| Total test functions defined |  | 165 |
+### 2.1 By folder
 
-Notes:
+| Folder | Tests |
+| --- | ---: |
+| `tests/helpers` | 1 |
+| `tests/test_agents` | 45 |
+| `tests/test_ai_services` | 87 |
+| `tests/test_api` | 174 |
+| `tests/test_core` | 20 |
+| `tests/test_db_schema` | 2 |
+| `tests/test_grammar_parser` | 31 |
+| `tests/test_guardrails` | 91 |
+| `tests/test_security` | 23 |
+| `tests/test_services` | 51 |
+| **Total** | **525** |
 
-- the Azure assessment module depends on `azure-cognitiveservices-speech`
-- in environments without that dependency, the rest of the suite can still be run separately
+### 2.2 By file
 
-## 3. Verified Local Commands
+| File | Tests |
+| --- | ---: |
+| `tests/helpers/test_db_mocks.py` | 1 |
+| `tests/test_agents/test_flashcard_tools.py` | 6 |
+| `tests/test_agents/test_output_models.py` | 12 |
+| `tests/test_agents/test_pipeline_guardrail.py` | 7 |
+| `tests/test_agents/test_pipeline_structured_output.py` | 7 |
+| `tests/test_agents/test_pipeline_suggestions.py` | 1 |
+| `tests/test_agents/test_pipeline_tool_use_failed.py` | 3 |
+| `tests/test_agents/test_pipeline_voice_accent.py` | 2 |
+| `tests/test_agents/test_tool_steps.py` | 7 |
+| `tests/test_ai_services/test_ai_services.py` | 60 |
+| `tests/test_ai_services/test_prompt_builder_grammar.py` | 11 |
+| `tests/test_ai_services/test_prompt_builder_pipeline_prompts.py` | 8 |
+| `tests/test_ai_services/test_system_prompt_structure.py` | 8 |
+| `tests/test_api/test_audio_proxy.py` | 2 |
+| `tests/test_api/test_clear_history.py` | 6 |
+| `tests/test_api/test_oauth.py` | 19 |
+| `tests/test_api/test_routes.py` | 73 |
+| `tests/test_api/test_schemas.py` | 37 |
+| `tests/test_api/test_tool_call_step_schema.py` | 4 |
+| `tests/test_api/test_topic_conversations.py` | 11 |
+| `tests/test_api/test_topics.py` | 4 |
+| `tests/test_api/test_user_data_flow.py` | 18 |
+| `tests/test_core/test_logger_uuid_mask.py` | 5 |
+| `tests/test_core/test_logging_middleware.py` | 4 |
+| `tests/test_core/test_metrics_ttft.py` | 4 |
+| `tests/test_core/test_settings_smtp.py` | 7 |
+| `tests/test_db_schema/test_messages_suggestions_schema.py` | 2 |
+| `tests/test_grammar_parser/test_annotated_grammar.py` | 31 |
+| `tests/test_guardrails/test_audit_logger.py` | 8 |
+| `tests/test_guardrails/test_content_filter.py` | 8 |
+| `tests/test_guardrails/test_exceptions.py` | 4 |
+| `tests/test_guardrails/test_injection.py` | 29 |
+| `tests/test_guardrails/test_input_guardrails.py` | 8 |
+| `tests/test_guardrails/test_output_guardrails.py` | 5 |
+| `tests/test_guardrails/test_rate_limiter.py` | 5 |
+| `tests/test_guardrails/test_topic_filter.py` | 17 |
+| `tests/test_guardrails/test_validator.py` | 7 |
+| `tests/test_security/test_security.py` | 23 |
+| `tests/test_services/test_azure_assessment.py` | 19 |
+| `tests/test_services/test_blaze_stt.py` | 4 |
+| `tests/test_services/test_blaze_tts.py` | 4 |
+| `tests/test_services/test_elevenlabs_tts.py` | 10 |
+| `tests/test_services/test_email_service.py` | 4 |
+| `tests/test_services/test_groq_llm_streaming.py` | 10 |
 
-The following command groups were verified against the current codebase:
-
-```bash
-python -m pytest tests/test_security/test_security.py tests/test_api/test_routes.py tests/test_api/test_user_data_flow.py -q
-python -m pytest tests/test_api/test_schemas.py tests/test_ai_services/test_ai_services.py -q
-```
-
-These cover 147 passing tests in the current local environment.
-
-The remaining Azure-specific module is expected to run when Azure Speech SDK is installed:
-
-```bash
-python -m pytest tests/test_services/test_azure_assessment.py -q
-```
-
-## 4. Test Architecture
-
-### 4.1 Mock Strategy
-
-The tests rely heavily on:
-
-- `unittest.mock.patch`
-- fake `minio` modules injected into `sys.modules`
-- mocked DB connections/cursors
-- patched AI service calls
-
-### 4.2 Shared Fixtures
-
-See `tests/conftest.py` for:
-
-- environment defaults
-- stubbed MinIO import
-- auth header factory
-- base `TestClient` fixture
-
-### 4.3 DB Mock Pattern
-
-Route tests typically mock:
-
-- `app.api.routes.get_connection`
-- `cursor.fetchone()`
-- `cursor.fetchall()`
-
-This allows each route to be tested without a real database.
-
-## 5. Coverage Areas
-
-### Security
-
-Covered behaviors:
-
-- bcrypt hashing
-- password verification
-- invalid hash handling
-- JWT claims
-- expired and malformed token handling
-
-### API Routes
-
-Covered behaviors:
-
-- register/login/me
-- chat text and audio flows
-- audio size checks
-- UUID validation
-- conversation ownership isolation
-- assessment route validation
-- security headers on `/health`
-
-### Schemas
-
-Covered behaviors:
-
-- email validation and normalization
-- response model defaults
-- Azure result normalization for syllables and phonemes
-
-### AI Services
-
-Covered behaviors:
-
-- history parsing
-- STT fallback
-- TTS fallback
-- pipeline fallback response
-
-### User Flows
-
-Covered behaviors:
-
-- full user lifecycle
-- continuing an existing conversation
-- message ordering
-- per-user access isolation
-
-## 6. Running Tests
+## 3. How To Run
 
 ### Full suite
 
 ```bash
-python -m pytest tests/ -v
+python -m pytest tests -q
 ```
 
-### Fast run
+### Collect-only inventory
 
 ```bash
-python -m pytest tests/ -q
+python -m pytest tests --collect-only -qq
 ```
 
-### One module
+### Per module
 
 ```bash
-python -m pytest tests/test_api/test_routes.py -v
-```
-
-### One class
-
-```bash
-python -m pytest tests/test_api/test_routes.py::TestAssessRoute -v
-```
-
-### Keyword filter
-
-```bash
-python -m pytest tests/ -k "login" -v
+python -m pytest tests/test_api/test_routes.py -q
 ```
 
 ### Coverage
 
 ```bash
-python -m pytest tests/ --cov=app --cov-report=html --cov-report=term-missing
+python -m pytest tests --cov=app --cov-report=term-missing --cov-report=html
 ```
 
-## 7. Common Issues
+## 4. Key Coverage Areas
 
-### Missing Azure SDK
+- Auth and identity: register/login/me, OAuth callback/linking, password reset/change
+- Conversation flows: create/continue/list/history/clear/topic-bound sessions
+- Audio flows: chat audio input path, audio proxy, upload validation/signature checks
+- AI pipeline behavior: fallback logic, structured output parsing, tool-step extraction
+- Guardrails: prompt injection, topic filtering, output filtering, audit logging, rate limit
+- Service adapters: Azure assessment, Blaze STT/TTS, ElevenLabs TTS, Groq streaming
+- Schema contracts: API payload models and DB schema assertions
 
-Symptom:
+## 5. Notes & Known Environment Gotchas
 
-- `ModuleNotFoundError: No module named 'azure'`
+- Some runs may print LangSmith multipart ingest warnings in offline/proxy-blocked environments; test pass/fail status is unaffected.
+- Azure assessment tests expect the SDK import path to be available in the test environment (already handled in current local run).
+- Route tests rely on mocked DB side effects; mismatched `fetchone()`/`fetchall()` sequences can trigger `StopIteration`.
 
-Fix:
+## 6. Latest Test Run Result (2026-05-17)
 
-- install packages from `requirements.txt`
+### Environment
 
-### Route test fails with `StopIteration`
+- Project: `AI_Speaking_Coach_H`
+- Date (local): `2026-05-17 14:28:39 +07:00`
+- Runner: `python -m pytest`
 
-Symptom:
+### Commands Executed
 
-- mocked cursor ran out of `fetchone()` values
+```bash
+python -m pytest tests --collect-only -qq
+python -m pytest tests -q
+```
 
-Fix:
+### Results
 
-- update the side-effect list to match the route's DB calls
+- Collected: **525**
+- Passed: **525**
+- Failed: **0**
+- Errors: **0**
+- Warnings: **1**
+- Duration: **30.40s**
 
-### `415 Unsupported Media Type`
+Pytest summary:
 
-Symptom:
+```text
+======================= 525 passed, 1 warning in 30.40s =======================
+```
 
-- audio route rejects a fake upload
+### Warning Observed
 
-Reason:
+- `LangChainPendingDeprecationWarning` from `langgraph.cache.base` (default value of `allowed_objects` will change).
 
-- backend now validates both declared content type and binary signature
+### Non-blocking Post-run Noise
 
-## 8. Related Files
+- LangSmith multipart ingest connection errors were printed after test completion due to network/proxy restrictions.
+- These did not change pytest exit code (suite still passed).
+
+## 7. Related Files
 
 - `tests/conftest.py`
 - `tests/helpers/db_mocks.py`
 - `tests/test_api/test_routes.py`
-- `tests/test_api/test_user_data_flow.py`
-- `tests/test_security/test_security.py`
 - `tests/test_ai_services/test_ai_services.py`
+- `tests/test_guardrails/test_injection.py`
 - `tests/test_services/test_azure_assessment.py`
