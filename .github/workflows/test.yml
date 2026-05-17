@@ -1,4 +1,4 @@
-name: Backend Tests
+﻿name: Backend Tests
 
 on:
   push:
@@ -23,22 +23,25 @@ jobs:
       - name: Install uv
         run: pip install uv --quiet
 
+      - name: Create virtual environment
+        run: python -m venv .venv
+
       - name: Install production dependencies
-        run: uv pip install -r requirements.txt --system --quiet
+        run: .venv/bin/python -m uv pip install -r requirements.txt --quiet
 
       - name: Install test dependencies
-        run: uv pip install -r requirements-test.txt --system --quiet
+        run: .venv/bin/python -m uv pip install -r requirements-test.txt --quiet
 
       - name: Run test suite
-        run: python -m pytest tests/ --tb=short
+        run: .venv/bin/python -m pytest tests/ --tb=short
         env:
-          # pytest tự set defaults cho các biến này trong conftest.py
-          # Chỉ cần override JWT_SECRET_KEY để đủ 32 bytes trên CI
+          # pytest sets these defaults in conftest.py
+          # Override JWT secret for CI to satisfy minimum length
           JWT_SECRET_KEY: "ci-test-secret-key-for-github-ci!"
 
       - name: Upload coverage report (optional)
         if: always()
         run: |
-          python -m pip install pytest-cov --quiet
-          python -m pytest tests/ --cov=app --cov-report=xml --quiet
+          .venv/bin/python -m pip install pytest-cov --quiet
+          .venv/bin/python -m pytest tests/ --cov=app --cov-report=xml --quiet
         continue-on-error: true
